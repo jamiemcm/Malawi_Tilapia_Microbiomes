@@ -1,0 +1,121 @@
+---
+title: "Comparing options of sequencing noise suppression 18S"
+author: "Jamie McMurtrie"
+date: "18/06/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, error = TRUE)
+knitr::opts_knit$set(root.dir = "C:/Users/jm1106/malawi_tilapia")
+```
+## Set up
+While we have previously explored tip glommed data as a means to conteract noise, it seems to throw away too much useful information, losing nearly all taxonomic definitions.
+
+Rather than using the full ASV table, as this hasn't undergone any other noise screening, we will implement see the prevalence based filtering approach from this well regarded workflow. https://f1000research.com/articles/5-1492/v2
+```{r libraries, include=TRUE}
+library(tidyverse); packageVersion("tidyverse")
+library(phyloseq); packageVersion("phyloseq")
+library(RColorBrewer); packageVersion("RColorBrewer")
+library(factoextra); packageVersion("factoextra") # for lovely PCA biplots
+library(here); packageVersion("here") # make the relative paths work
+library(gridExtra); packageVersion("gridExtra") # for layout of separate plots
+```
+
+```{r seed and plot settings, include=TRUE}
+theme_set(theme_bw())
+set.seed(1234)
+annoCol.pond <- list(Pond=c("1" = "#e6ab02", "2" = "#66a61e", "3" = "#1b9e77","4" = "#a6761d", "5" = "#d95f02", "6" = "#7570b3", "7" = "#e7298a"))
+cbPalette.ponds.geog <- c("1" = "#e6ab02", "2" = "#66a61e", "3" = "#1b9e77","4" = "#a6761d", "5" = "#d95f02", "6" = "#7570b3", "7" = "#e7298a")
+cbPalette.sampleType <- c("Pond" = "#0072B2", "Swab" = "#CC79A7")
+```
+
+```{r load data, include=TRUE}
+#our regular handy tidy up function for phyloseq objects
+tidyPS <- function(ps, RA){
+  ps <- prune_taxa(taxa_sums(ps) > 0, ps)
+  ps <- prune_samples(sample_sums(ps) > 0, ps)
+  if(RA == TRUE){
+    ps <- transform_sample_counts(ps, function(x){x / sum(x)})
+  }
+  return(ps)} #small function to tidy ps object after subsetting to remove any zero taxa or samples, optionally transforms counts to relative abundance
+
+
+
+s18_ps <- readRDS(here("data", "process", "V9_phyloseq_obj_with_tree.rds")) #and the 18s V9
+
+s18_ps_pond_swab <- subset_samples(s18_ps, sample_type %in% c("Swab", "Pond")) %>% tidyPS(., FALSE) #remove the incubates
+sample_data(s18_ps_pond_swab)$Pond <- as.factor(sample_data(s18_ps_pond_swab)$Pond)
+s18_ps_pond_swab
+```
+
+## Prevelance filtering
+This table is the divisions table before any filtering, not many odd divisions compared to the 16S data, but 476 avs with no Division classification. This could be poor reference databases, but also reflect sequencing noise.
+The second table shows prevalence of divisions   
+1 = the average number of times each Division will appear in a sample.
+2 = total number of times that Division will appear across all samples
+```{r prev filt, include=TRUE, echo=FALSE}
+table(tax_table(s18_ps_pond_swab)[, "Division"], exclude = NULL) #prints all the divisions and their asv counts
+#we have 497 NA Division ASVs,
+
+  # Compute prevalence of each feature, store as data.frame
+  prevdf <- apply(X = otu_table(s18_ps_pond_swab), MARGIN = ifelse(taxa_are_rows(s18_ps_pond_swab), yes = 1, no = 2), FUN = function(x){sum(x > 0)})
+  # Add taxonomy and total read counts to this data.frame
+  prevdf <- data.frame(Prevalence = prevdf, TotalAbundance = taxa_sums(s18_ps_pond_swab), tax_table(s18_ps_pond_swab))
+  plyr::ddply(prevdf, "Division", function(df1){cbind(mean(df1$Prevalence),sum(df1$Prevalence))})
+  #1 = the avergae number of times each Division will appear in a sample. this doesn't appear to go below 1
+  #2 = total number of times that Division will appear across all samples
+
+
+print("next step (unlike above) is unsupervised filtering, that does not rely on any previous sample / taxonomic info")
+# Subset to the remaining divisions
+prevdf1 <- subset(prevdf, Division %in% get_taxa_unique(s18_ps_pond_swab, "Division"))
+print("This shows each ASV as a point, with each graph a separate divisions. Total abundance of ASV vs prevalence (i.e. fraction of samples with the ASV)")
+ggplot(prevdf1, aes(TotalAbundance, Prevalence / nsamples(s18_ps_pond_swab),color=Division)) +
+  # Include a guess for parameter
+  geom_hline(yintercept = 0.02, alpha = 0.5, linetype = 2) + geom_point(size = 2, alpha = 0.7) +
+  scale_x_log10() +  xlab("Total Abundance") + ylab("Prevalence [Frac. Samples]") +
+  facet_wrap(~Division) + theme(legend.position="none")
+
+print("Define prevalence threshold as 2% of total samples, repeat as above with filtered object")
+prevalenceThreshold <- 0.02 * nsamples(s18_ps_pond_swab) # 
+# Execute prevalence filter, using `prune_taxa()` function
+keepTaxa <- rownames(prevdf1)[(prevdf1$Prevalence >= prevalenceThreshold)] #drops taxa from 7290 to 4799
+ps_2per <- prune_taxa(keepTaxa, s18_ps_pond_swab) 
+table(tax_table(ps_2per)[, "Division"], exclude = NULL) #main effect is on reducing 497 NA divisions to 271
+prevdf <- apply(X = otu_table(ps_2per), MARGIN = ifelse(taxa_are_rows(ps_2per), yes = 1, no = 2), FUN = function(x){sum(x > 0)})
+prevdf <- data.frame(Prevalence = prevdf, TotalAbundance = taxa_sums(ps_2per), tax_table(ps_2per))
+prevdf1 <- subset(prevdf, Division %in% get_taxa_unique(ps_2per, "Division"))
+ggplot(prevdf1, aes(TotalAbundance, Prevalence / nsamples(ps_2per),color=Division)) +
+  # Include a guess for parameter
+  geom_hline(yintercept = 0.02, alpha = 0.5, linetype = 2) + geom_point(size = 2, alpha = 0.7) +
+  scale_x_log10() +  xlab("Total Abundance") + ylab("Prevalence [Frac. Samples]") +
+  facet_wrap(~Division) + theme(legend.position="none")
+
+```
+
+With ASVs now filtered to 2% prevalence in samples we see a drop in the number of ASVs associated with each divisions. This means that ASVs even with very low abundance will have been kept providing they show prevalence across all the samples (present in 2% of samples) 
+Original taxa 1900 have dropped to 1673 with prevalence filtering.
+
+## Remove remaining fish ASVs
+There are a few remaining 'Craniata', 'Telost' reads which dominate, especially swab samples.
+```{r telost, include =TRUE, echo=FALSE}
+rm_contams <- function(physeq, badTaxa){
+  allTaxa <- taxa_names(physeq)
+  allTaxa <- allTaxa[!(allTaxa %in% badTaxa)]
+  return(prune_taxa(allTaxa, physeq))
+} #handy self made function to remove selected taxa from phyloseq object
+view_otu <- function(ps){View(ps@otu_table@.Data)}
+view_tax <- function(ps){View(ps@tax_table@.Data)}
+
+s18_metazoan <- subset_taxa(ps_2per, Class=="Craniata")
+view_tax(s18_metazoan)
+view_otu(s18_metazoan)
+craniata_asvs <- row.names(s18_metazoan@tax_table@.Data)
+
+s18_ps_clean <- rm_contams(ps_2per, craniata_asvs)
+s18_ps_clean
+
+saveRDS(s18_ps_clean, here("data", "process", "V9_phyloseq_obj_with_tree_prev_filt.rds"))
+```
+

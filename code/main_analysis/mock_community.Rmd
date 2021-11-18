@@ -1,0 +1,248 @@
+---
+title: "Mock communtiy quantification"
+author: "Jamie McMurtrie"
+date: "07/07/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, error = TRUE)
+knitr::opts_knit$set(root.dir = "C:/Users/jm1106/malawi_tilapia")
+```
+
+##Introduction
+We used the ZymoBIOMICS® Microbial Community DNA standard, lot number ZRC190811.
+expected ratios found here https://files.zymoresearch.com/protocols/_d6305_d6306_zymobiomics_microbial_community_dna_standard.pdf
+
+Plot a relative abundance bar chart of expected vs sequenced controls. e.g.
+https://github.com/yanxianl/Li_AqFl1-Microbiota_2021/blob/master/code/08_taxonomy.Rmd
+https://github.com/yanxianl/Li_AqFl1-Microbiota_2021/blob/master/data/reference/mock_expected.tsv
+
+
+```{r libraries, include=TRUE}
+library(here); packageVersion("here") # make the relative paths work
+library(tidyverse); packageVersion("tidyverse")
+library(phyloseq); packageVersion("phyloseq")
+library(cowplot); packageVersion("cowplot") # for density plots
+```
+```{r phyloseq tidy up functions}
+tidyPS <- function(ps, RA){
+  ps <- prune_taxa(taxa_sums(ps) > 0, ps)
+  ps <- prune_samples(sample_sums(ps) > 0, ps)
+  if(RA == TRUE){
+    ps <- transform_sample_counts(ps, function(x){x / sum(x)})
+  }
+  return(ps)} 
+```
+## Read in files
+```{r libraries, include=TRUE}
+mock_expected <- read.csv(here("data", "references", "mock_community_expected.csv"))
+
+## Load data ####
+## Combine ASV count table and taxonomy table from V4_DADA2_generate_ASV_table.R
+## script, plus metadata table, into a phyloseq object
+## Load metadata, with first column (Sample) as row names to match ASV table
+#metadata <- read.table(here("data/raw/malawi_tilapia_metadata.txt"), header = TRUE,
+#                       row.names = 1)
+#seqtab <- readRDS(here("data/process/V4_ASVtable_final.rds"))
+#tax <- readRDS(here("data/process/V4_tax_bayesian_final.rds"))
+#
+#
+## Combine into phyloseq object
+#ps <- phyloseq(otu_table(seqtab, taxa_are_rows=FALSE), 
+#               sample_data(metadata), 
+#               tax_table(tax))
+#
+## Remove large temporary objects
+#rm(seqtab); rm(tax)
+#ps.cont <- subset_samples(ps, sample_type %in% "control")
+#mock_names <- grep("mock", sample_names(ps.cont), value = TRUE)
+#ps.ra.mock <- subset_samples(ps.cont, sample_names(ps.cont) %in% mock_names) %>% tidyPS(TRUE)
+
+ps_post_decontam <- readRDS(here("data/process/V4_phyloseq_obj_after_decontam.rds"))
+ps_post_decontam %>% sample_data()
+
+ps_mocks <- subset_samples(ps_post_decontam, sample_type_detailed %in% c("control_mock_DNA", "control_mock_extr")) %>% tidyPS(TRUE)
+#ps_mocks_2 <- subset_samples(ps_post_decontam, sample_type_detailed %in% "control_mock_DNA") %>% tidyPS(TRUE)
+
+#change to ASV names
+seqs <- Biostrings::DNAStringSet(taxa_names(ps_mocks))
+names(seqs) <- taxa_names(ps_mocks)
+ps_mocks_2 <- merge_phyloseq(ps_mocks, seqs)
+taxa_names(ps_mocks_2) <- paste0("ASV", seq(ntaxa(ps_mocks_2)))
+View(ps_mocks_2@tax_table@.Data)
+
+#merge at genus level (note 2x bacillus ASVs), we will evaluate all at genus level, only a couple at species definition (not that that can really be trusted)
+ps_mocks_gen <- tax_glom(ps_mocks_2, "Genus", NArm = FALSE)
+tax_table(ps_mocks_gen)
+
+#expec_genus <- mock_expected[,"Taxonomy"] %>% str_split(" ")
+#expec_genus[1] 
+#seperate(mock_expected, )
+#separate(mock_expected, "Taxonomy", into = NA, sep = " ")
+```
+
+
+check listeria in pre-decontam object
+```{r}
+mock_expected <- read.csv(here("data", "references", "mock_community_expected.csv"))
+
+metadata <- read.table(here("data/raw/malawi_tilapia_metadata.txt"), header = TRUE,
+                       row.names = 1)
+seqtab <- readRDS(here("data/process/V4_ASVtable_final.rds"))
+tax <- readRDS(here("data/process/V4_tax_bayesian_final.rds"))
+
+
+# Combine into phyloseq object
+ps <- phyloseq(otu_table(seqtab, taxa_are_rows=FALSE), 
+               sample_data(metadata), 
+               tax_table(tax))
+
+ps_full_mocks <- subset_samples(ps, sample_type_detailed %in% c("control_mock_DNA", "control_mock_extr")) %>% tidyPS(TRUE)
+
+seqs <- Biostrings::DNAStringSet(taxa_names(ps_full_mocks))
+names(seqs) <- taxa_names(ps_full_mocks)
+ps_full_mocks <- merge_phyloseq(ps_full_mocks, seqs)
+taxa_names(ps_full_mocks) <- paste0("ASV", seq(ntaxa(ps_full_mocks)))
+View(ps_full_mocks@tax_table@.Data)
+
+#merge at genus level (note 2x bacillus ASVs), we will evaluate all at genus level, only a couple at species definition (not that that can really be trusted)
+ps_mocks_gen <- tax_glom(ps_full_mocks, "Genus", NArm = FALSE)
+tax_table(ps_mocks_gen)
+
+```
+
+For this step I need to add a new sample to this object as the expected, and provide expected values for each equivilant ASV.
+Also need to group the remaining non-expected ASVs into an 'other'. Get a vector of the expecetd genus, then use this to select the other genera to merge under phyloseq merge_taxa.
+```{r format expected data, include=TRUE, echo=FALSE}
+mock_taxonomy <- mock_expected %>% separate(Taxonomy, c("Genus", "Species"))
+expec_genus <- mock_taxonomy$Genus
+mock_taxa <- ps_mocks_gen %>% subset_taxa(Genus %in% expec_genus) %>% taxa_names()
+mock_taxa <- c(mock_taxa, "ASV4")
+#for some reasons the e coli from the mock community has been assignedby silva as "Escherichia/Shigella" so we shall mannual add the corresponding ASV4
+all_taxa <- taxa_names(ps_mocks_gen)
+taxa_to_merge <- setdiff(all_taxa, mock_taxa)
+
+ps_mock_megre <- merge_taxa(ps_mocks_gen, taxa_to_merge)
+taxa_names(ps_mock_megre)
+
+ps_mock_megre
+```
+
+```{r construct expected sampled}
+mock_exp_sam <- data.frame(NA,NA,NA,NA,"control_expected", "control_expected", NA, "sample", NA, NA,NA, FALSE)
+names(mock_exp_sam) <- colnames(sample_data(ps_mock_megre))
+rownames(mock_exp_sam) <- "Mock_expected"
+
+mock_exp_otu <- data.frame(0.174,0.155,0.101,0.184,0.104,0.141,0.099,0.042,0)
+names(mock_exp_otu) <- colnames(otu_table(ps_mock_megre))
+rownames(mock_exp_otu) <- "Mock_expected"
+
+new_sample_data <- rbind(sample_data(ps_mock_megre), mock_exp_sam)
+new_otu_tab <- rbind(otu_table(ps_mock_megre), mock_exp_otu)
+
+final_phyloseq <- phyloseq(sample_data(new_sample_data),
+                           otu_table(new_otu_tab, taxa_are_rows = FALSE),
+                           tax_table(ps_mock_megre@tax_table@.Data))
+final_phyloseq
+
+
+desired_order <- sample_names(final_phyloseq) #for some reason the samples in plot bar get reordered away from those provided.
+theme_set(theme_minimal()) 
+#plot_bar(final_phyloseq, fill = "Genus", facet_grid = ~sample_type)
+colour_pal <- c("#332288", "#88CCEE", "#44AA99", "#117733", "#999933", "#DDCC77", "#CC6677", "#882255", "#C5C5C5")
+p <- plot_bar(final_phyloseq, fill = "Genus") + scale_fill_manual(values = colour_pal)
+p$data$Sample <- factor(p$data$Sample, levels = desired_order)
+p
+
+plot_bar_2 <-  function (physeq, x = "Sample", y = "Abundance", fill = NULL, title = NULL, facet_grid = NULL, border_color = NA) 
+{
+  mdf = psmelt(physeq)
+  p = ggplot(mdf, aes_string(x = x, y = y, fill = fill))
+  p = p + geom_bar(stat = "identity", position = "stack",  color = border_color)
+  p = p + theme(axis.text.x = element_text(angle = -90, hjust = 0))
+  if (!is.null(facet_grid)) {
+    p <- p + facet_grid(facet_grid)
+  }
+  if (!is.null(title)) {
+    p <- p + ggtitle(title)
+  }
+  return(p)
+}
+
+p <- plot_bar_2(final_phyloseq, fill = "Genus") + geom_bar(stat = "identity") + scale_fill_manual(values = colour_pal, na.value = "#C5C5C5")
+p$data$Sample <- factor(p$data$Sample, levels = desired_order)
+p
+
+ggsave(here::here("results", "figures", "mock_barplot_16s.svg"), plot = p, width = 10, height = 8, dpi = 600)
+```
+
+## Now 18S
+
+```{r}
+#mock_expected <- read.csv(here("data", "references", "mock_community_expected.csv"))
+
+metadata <- read.table(here("data/raw/malawi_tilapia_metadata.txt"), header = TRUE,
+                       row.names = 1)
+seqtab <- readRDS(here("data/process/V9_seqtab_nochim.rds"))
+tax <- readRDS(here("data/process/V9_tax_final_silva.rds"))
+
+
+# Combine into phyloseq object
+ps <- phyloseq(otu_table(seqtab, taxa_are_rows=FALSE), 
+               sample_data(metadata), 
+               tax_table(tax))
+
+ps_full_mocks <- ps %>% subset_taxa(Kingdom == "Eukaryota") %>% 
+                  subset_samples(sample_type_detailed %in% c("control_mock_DNA", "control_mock_extr")) %>% tidyPS(TRUE) 
+
+seqs <- Biostrings::DNAStringSet(taxa_names(ps_full_mocks))
+names(seqs) <- taxa_names(ps_full_mocks)
+ps_full_mocks <- merge_phyloseq(ps_full_mocks, seqs)
+taxa_names(ps_full_mocks) <- paste0("ASV", seq(ntaxa(ps_full_mocks)))
+View(ps_full_mocks@tax_table@.Data)
+
+#merge at family level (note 2x Cryptococcaceae ASVs), we will evaluate all at family level, only a couple at genus definition (not that that can really be trusted)
+ps_mocks_gen <- tax_glom(ps_full_mocks, "Family", NArm = FALSE)
+tax_table(ps_mocks_gen)
+
+```
+
+
+```{r format expected data, include=TRUE, echo=FALSE}
+expec_family <- c("Saccharomycetaceae", "Cryptococcaceae")
+mock_taxa <- ps_mocks_gen %>% subset_taxa(Family %in% expec_family) %>% taxa_names()
+
+all_taxa <- taxa_names(ps_mocks_gen)
+taxa_to_merge <- setdiff(all_taxa, mock_taxa)
+
+ps_mock_megre <- merge_taxa(ps_mocks_gen, taxa_to_merge)
+taxa_names(ps_mock_megre)
+
+ps_mock_megre
+
+mock_exp_sam <- data.frame(NA,NA,NA,NA,"control_expected", "control_expected", NA, "sample", NA, NA,NA, FALSE)
+names(mock_exp_sam) <- colnames(sample_data(ps_mock_megre))
+rownames(mock_exp_sam) <- "Mock_expected"
+
+mock_exp_otu <- data.frame(0,0.5,0.5)
+names(mock_exp_otu) <- colnames(otu_table(ps_mock_megre))
+rownames(mock_exp_otu) <- "Mock_expected"
+
+new_sample_data <- rbind(sample_data(ps_mock_megre), mock_exp_sam)
+new_otu_tab <- rbind(otu_table(ps_mock_megre), mock_exp_otu)
+
+final_phyloseq <- phyloseq(sample_data(new_sample_data),
+                           otu_table(new_otu_tab, taxa_are_rows = FALSE),
+                           tax_table(ps_mock_megre@tax_table@.Data))
+final_phyloseq
+
+desired_order <- sample_names(final_phyloseq) #for some reason the samples in plot bar get reordered away from those provided.
+
+p2 <- plot_bar_2(final_phyloseq, fill = "Family") + geom_bar(stat = "identity") + scale_fill_manual(values = colour_pal, na.value = "#C5C5C5")
+p2$data$Sample <- factor(p2$data$Sample, levels = desired_order)
+p2
+
+ggsave(here::here("results", "figures", "mock_barplot_18s.svg"), plot = p2, width = 10, height = 8, dpi = 600)
+```
+
