@@ -1,0 +1,157 @@
+---
+title: "Tilapia species differences"
+author: "Jamie McMurtrie"
+date: "21/6/2021"
+output: html_document
+
+---
+# Supplementary figure 5
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, error = TRUE)
+knitr::opts_knit$set(root.dir = "C:/Users/jm1106/Malawi_Tilapia_Microbiomes")
+```
+
+## R Setup Libraries
+
+```{r libraries, include=TRUE, echo=TRUE}
+library(tidyverse); packageVersion("tidyverse")
+library(phyloseq); packageVersion("phyloseq")
+library(RColorBrewer); packageVersion("RColorBrewer")
+library(ggpubr); packageVersion("ggpubr") # for publication-quality ggplots
+library(cowplot); packageVersion("cowplot") # for density plots
+library(here); packageVersion("here") # make the relative paths work
+library(DivNet); packageVersion("DivNet")
+library(breakaway); packageVersion("breakaway")
+library(factoextra); packageVersion("factoextra") # for lovely PCA biplots
+```
+
+
+```{r seed and plot settings, include=TRUE, echo=TRUE}
+theme_set(theme_bw())
+set.seed(1234)
+
+theme_set(theme(panel.background = element_blank(), axis.line = element_line(colour = "black")))
+#when plotting with ggplot, removes grid lines etc for a clean plot 
+species_colour <- c("#ffabaf", "#8a2424", "#d63638")
+```
+
+A useful function for cleaning up phyloseq objects after subsetting to remove any zero taxa or samples, and optionally transform counts to relative abundance. Second function for removing undesired taxa (by ASV name) from phyloseq objects.
+```{r phyloseq tidy up functions}
+tidyPS <- function(ps, RA){
+  ps <- prune_taxa(taxa_sums(ps) > 0, ps)
+  ps <- prune_samples(sample_sums(ps) > 0, ps)
+  if(RA == TRUE){
+    ps <- transform_sample_counts(ps, function(x){x / sum(x)})
+  }
+  return(ps)} 
+```
+
+Reading in data and preparing phyloseq objects for analysis.
+```{r data setup}
+s16_ps <- readRDS(here("data", "process", "V4_phyloseq_obj_with_tree_prev_filt.rds")) #can't start variable names with numbers, hence s16 / s18 herein refers to 16s 18s
+
+s16_ps_swab <- subset_samples(s16_ps, sample_type %in% "Swab") %>% tidyPS(., FALSE) 
+
+s16_ps_swab_og <- subset_samples(s16_ps, sample_type %in% "Swab") %>% tidyPS(., FALSE) #the original non rarefied object is used for beta diversity (compositional log ratio approaches)
+
+set.seed(1234)
+s16_ps_swab <- rarefy_even_depth(s16_ps_swab) #removes 492 ASVs
+#the rarefied object is used for alpha diversity calcs
+
+sample_data(s16_ps_swab)$Pond <- as.factor(sample_data(s16_ps_swab)$Pond) #this changes time points from a continuous scale to categoric
+```
+
+## All species
+
+```{r all species alpha diversity}
+sample_data(s16_ps_swab)
+
+species <- c(rep.int("Coptodon rendalli",11), rep.int("Tilapia sparmanii", 3), "Coptodon rendalli", "Tilapia sparmanii", "Coptodon rendalli", "Tilapia sparmanii", rep.int("Coptodon rendalli",5), rep.int("Oreochromis shiranus",9))
+
+sample_data(s16_ps_swab)$Species <- species #add species labels to each sample
+
+wunifrac_dist <- phyloseq::distance(s16_ps_swab, method="unifrac", weighted=F)
+ordination <- ordinate(s16_ps_swab, method="PCoA", distance=wunifrac_dist)
+plot_ordination(s16_ps_swab, ordination, color = "Species") + theme(aspect.ratio=1)
+
+#plot_richness(s16_ps_swab, x="Species", measures = c("Chao1", "Shannon"))
+
+alpha_ests <- estimate_richness(s16_ps_swab, measures = c("Chao1", "Shannon")) %>%
+              cbind(sample_data(s16_ps_swab)[,"Species"]) %>%
+              cbind(sample_data(s16_ps_swab)[,"Pond"])
+
+chao1_wlech <- oneway.test(alpha_ests$Chao1 ~ alpha_ests$Species)
+chao1_wlch_p <- paste("Welch's ANOVA, p = ", round(chao1_wlech$p.value, digits = 3))
+  
+chao1_p <- ggplot(data = alpha_ests, aes(x = Species, y = Chao1, color = Species)) +
+              geom_point(shape=19, alpha=0.4, stroke = 1, size = 3, aes(color=Species), show.legend=F) +
+              stat_summary(fun = mean, geom = "crossbar", width = 0.8,
+                       aes(color=Species), show.legend = F) +
+            scale_color_manual(values = species_colour) +
+            theme(axis.text.x = element_text(angle = 45, vjust = 0.5))+ #, vjust = 0.5, hjust=1)) +
+            annotate("text", x = 2, y = 800, label = chao1_wlch_p)
+
+shan_wlech <- oneway.test(alpha_ests$Shannon ~ alpha_ests$Species)
+shan_wlch_p <- paste("Welch's ANOVA, p = ", round(shan_wlech$p.value, digits = 3))
+
+shan_p <- ggplot(data = alpha_ests, aes(x = Species, y = Shannon, color = Species)) +
+              geom_point(shape=19, alpha=0.4, stroke = 1, size = 3, aes(color=Species), show.legend=F) +
+              stat_summary(fun = mean, geom = "crossbar", width = 0.8,
+                       aes(color=Species), show.legend = F) +
+           scale_color_manual(values = species_colour) +
+            theme(axis.text.x = element_text(angle = 45, vjust = 0.5)) +
+          annotate("text", x = 2, y = 6, label = shan_wlch_p)
+
+chao1_p
+shan_p
+```
+
+```{r all species clr beta diversity}
+samples_V4 <- as.data.frame(sample_data(s16_ps_swab))
+samples_V4 <- as_tibble(samples_V4, rownames = "SampleID")
+
+V4_czm <- zCompositions::cmultRepl(otu_table(s16_ps_swab_og), method = "CZM") #note using non-rarefied object
+
+V4_comp <- CoDaSeq::codaSeq.clr(V4_czm) 
+
+# Run the PCA on the CLR-transformed data
+V4_PCA <- prcomp(V4_comp)
+
+pind_V4 <- fviz_pca_ind(V4_PCA, 
+                            geom.ind = "point", # show points only (but not "text"))
+                            pointsize = 4,
+                            pointshape = 19, alpha = 0.7,
+                            col.ind =  samples_V4$Species, # Grouping variable
+                            #shape.ind = df$Time_point,
+                            palette = species_colour,
+                            #addEllipses = TRUE, 
+                            legend.title = "Culture species",
+                            invisible="quali") #to remove group centrodi large points
+pind_V4
+
+
+region <- c(rep("Blantyre",23), rep("Maldeco",9))
+samples_V4$Region <- region
+
+  
+clr_dist <- dist(V4_comp, method = "euclidean") #calculate distance
+dispr <- vegan::betadisper(clr_dist, samples_V4$Species)
+print(dispr)
+dispr_reg <- vegan::betadisper(clr_dist, samples_V4$Region)
+print(dispr_reg)
+print(vegan::permutest(dispr, pairwise = TRUE))
+
+adonis_species <- vegan::adonis(clr_dist ~ samples_V4$Species)
+print(adonis_species)
+adonis_region <- vegan::adonis(clr_dist ~ samples_V4$Region)
+print(adonis_region)
+
+```
+
+COmbine figures
+```{r combine}
+alpha_plots <- cowplot::plot_grid(chao1_p, shan_p, ncol = 2)
+alpha_beta_plots <- cowplot::plot_grid(alpha_plots, pind_V4, nrow = 2)
+alpha_beta_plots
+ggsave(here("results", "figures", "species_2.svg"), plot = alpha_beta_plots, width = 8, height = 8, dpi = 600)
+```
