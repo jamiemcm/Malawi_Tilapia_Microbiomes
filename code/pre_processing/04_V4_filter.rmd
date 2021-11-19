@@ -7,7 +7,7 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE, error = TRUE)
-knitr::opts_knit$set(root.dir = "C:/Users/jm1106/malawi_tilapia")
+knitr::opts_knit$set(root.dir = "C:/Users/jm1106/Malawi_Tilapia_Microbiomes")
 ```
 ## Set up
 While we have previously explored tip glommed data as a means to conteract noise, it seems to throw away too much useful information, losing nearly all taxonomic definitions.
