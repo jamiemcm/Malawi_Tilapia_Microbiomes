@@ -1,0 +1,247 @@
+---
+title: '18S biplots with marginal density plots and boxplots'
+author: "Jamie McMurtrie"
+date: "22/6/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, error = TRUE)
+knitr::opts_knit$set(root.dir = "C:/Users/jm1106/Malawi_Tilapia_Microbiomes")
+```
+
+## Set-up
+For the PCA biplot, I'm using `factoextra`, which I've found easiest (http://www.sthda.com/english/wiki/factoextra-r-package-easy-multivariate-data-analyses-and-elegant-visualization). 
+
+```{r libraries, include=TRUE}
+library(here); packageVersion("here") # make the relative paths work
+library(tidyverse); packageVersion("tidyverse")
+library(phyloseq); packageVersion("phyloseq")
+library(gridExtra); packageVersion("gridExtra") # for layout of separate plots
+library(RColorBrewer); packageVersion("RColorBrewer")
+library(factoextra); packageVersion("factoextra") # for lovely PCA biplots
+library(ggpubr); packageVersion("ggpubr") # for publication-quality ggplots
+library(ggExtra); packageVersion("ggExtra") # for density plots around scatter plots
+library(cowplot); packageVersion("cowplot") # for density plots
+```
+
+
+```{r seed and plot settings, include=TRUE}
+theme_set(theme_bw())
+set.seed(1234)
+
+cbPalette.ponds.geog <- c("1" = "#e6ab02", "2" = "#66a61e", "3" = "#1b9e77","4" = "#a6761d", "5" = "#d95f02", "6" = "#7570b3", "7" = "#e7298a")
+theme_set(theme(panel.background = element_blank(), axis.line = element_line(colour = "black")))
+#when plotting with ggplot, removes grid lines etc for a clean plot N>B double check if needed
+
+annoCol.pond <- list(Pond=c("1" = "#e6ab02", "2" = "#66a61e", "3" = "#1b9e77","4" = "#a6761d", "5" = "#d95f02", "6" = "#7570b3", "7" = "#e7298a"))
+annoCol.sampleType <- list(sample_type=c("Pond" = "#0072B2", "Swab" = "#CC79A7"))
+#pheatmap requires colour palletes as a list rather than named vector. 
+#perhaps in future could call :
+#annotation_colors = list(sample_type=cbPalette.sampleType)
+```
+
+A useful function for cleaning up phyloseq objects after subsetting to remove any zero taxa or samples, and optionally transform counts to relative abundance
+```{r phyloseq tidy up functions}
+tidyPS <- function(ps, RA){
+  ps <- prune_taxa(taxa_sums(ps) > 0, ps)
+  ps <- prune_samples(sample_sums(ps) > 0, ps)
+  if(RA == TRUE){
+    transform_sample_counts(ps, function(x){x / sum(x)})
+  }
+  return(ps)} 
+```
+
+## Tilapia pond water microbiomes, seperated by pond site
+Load the 18S (V9)  phyloseq object, subset samples, remove ASVs with fewer than 10 reads overall, and extract the various data tables (since I'm not going to use phyloseq beyond this step).  Removing the rare ASVs reduces the zero overinflation, though keeping these rare ASVs doesn't have much effect on the results. This appears particuarly the case for this Malawi dataset, and major site trends still hold true.
+```{r load data PL tank plus direct inputs}
+V9.tree <- readRDS(here("data", "process", "V9_phyloseq_obj_with_tree_prev_filt.rds")) #note this 18S phyloseq object has had the top ASV attributed to tilapia removed) 
+V9.tree #working with 1659 taxa by 63 samples
+
+V9.sub <- subset_samples(V9.tree, sample_type %in% "Pond") %>% tidyPS(., FALSE)
+sample_data(V9.sub)$Pond <- as.factor(sample_data(V9.sub)$Pond)
+V9.sub #working with 1650 taxa by 35 samples
+
+V9.pond <- V9.sub
+#previously (in 16S) we have removed asvs with fewer than 10 reads, to reduce zero overinflation, in this data set though it  does reduce the number of taxa by 400, although it makes no difference to the ordinations. Downstream no change to conclusions.
+#V9.pond <- prune_taxa(taxa_sums(V9.sub) > 10, V9.sub)
+V9.pond ##working with 1650 taxa by 35 samples
+
+##check all computes remain the same! *****
+
+asvs_V9 <- as.data.frame(otu_table(V9.pond))
+asvs_V9 <- as_tibble(asvs_V9, rownames = "Sample_ID", colnames = "ASV_ID")
+
+taxs_V9 <- as.data.frame(tax_table(V9.pond))
+taxs_V9 <- as_tibble(taxs_V9, rownames = "ASV_ID")
+
+samples_V9 <- as.data.frame(sample_data(V9.pond))
+samples_V9 <- as_tibble(samples_V9, rownames = "SampleID")
+
+# Make a streamlined metadata object, relastically we are only concerned by pond site in this case
+sample_vars_V9 <- samples_V9 %>% select(SampleID, Pond, sample_type)
+```
+
+Carry out zero count replacement with `cmultRepl`, convert to proportions, then compute center mean log ratio transform. I then run the PCA (equivalent to PCoA with Euclidean distances), visualise the eigenvalues, and generate the biplot with the `factoextra` function `fviz_pca_biplot`.
+```{r V9 biplot tank inputs, include =TRUE}
+V9_czm <- zCompositions::cmultRepl(otu_table(V9.pond), method = "CZM") #zero replacment method, czm is  more roboust to zeros than gbm
+#n.b. dominiques code gives p-counts of zero replacement, then calculates proportions. Above in one line.
+
+#V9_czm_Pcount <- zCompositions::cmultRepl(otu_table(V9.pond), method = "CZM", output = "p-counts")
+#V9_prop <- t(apply(V9_czm_Pcount, 1, function(x){x/sum(x)}))
+#this gives exact same proportions as basic cmultRepl, which outputs proportions
+
+# make our compositional dataset with the center mean log ratio function, i.e. log(x) - mean(log(x))
+V9_comp <- CoDaSeq::codaSeq.clr(V9_czm) 
+
+# Run the PCA on the CLR-transformed data
+V9_PCA <- prcomp(V9_comp)
+
+# Visualize eigenvalues/variances
+fviz_screeplot(V9_PCA, addlabels = TRUE)
+
+
+# Generate biplot with colours for pond sites
+pmain_V9 <- fviz_pca_biplot(V9_PCA, 
+                axes = c(1, 2), # which PCs to plot
+                repel = TRUE, # avoid text overlapping
+                # Settings for samples
+                geom = "point", 
+                col.ind = sample_vars_V9$Pond, # Grouping variable, pond site
+                pointsize = 4,
+                pointshape = 19, alpha = 0.7,
+                mean.point = FALSE, # Whether to include the mean of each group
+                # Settings for ASVs (i.e. variables)
+                geom.var = c("arrow", "text"), # Show arrows and text, no points
+                select.var = list(contrib=15), # How many of the top variables to show
+                col.var = "black") +
+                #addEllipses=TRUE, ellipse.level=0.95) + #in this case as so tightly clustered eclipses don't enhance
+   coord_fixed(1) + # run first with this command to get the best coordinates given the data
+  #coord_cartesian(xlim = c(-50, 50), ylim = c(-40, 40)) + # specify coordinates to align boxplots
+  scale_colour_manual(name = "Pond", values = cbPalette.ponds.geog) + # Custom colours
+  labs(title = "")
+
+pmain_V9
+
+```
+
+## Stats testing
+Statistical testing of significant difference between pond sites. We utilise two tests here, firstly. a permanova through the adonis function that is the main test for difference between groups. (Note the test take the centroid i.e. median position of each group and uses this for the test) The seperation is so obvious by eye that we don't really need to do this, but if you want a P value here it is!
+Additionally, we perform a permutation test for homgeneity of multivariate dispersions. As mentioned above the permanova just tests the centroid positioning, but its useful to include this second test to check if the dispersion of points within each group significanly differs. In this case its a no, as each group is tightly clustered. 
+```{r stats, include=TRUE, echo=FALSE}
+
+beta_permanova <- function(asvs, variableTest){
+  set.seed(1234)
+  clr_dist <- dist(asvs, method = "euclidean") #calculate distance
+  veg_ad <- vegan::adonis(clr_dist ~ variableTest) #permanova test
+  dispr <- vegan::betadisper(clr_dist, variableTest)
+  print(veg_ad)
+  print(dispr)
+  print(vegan::permutest(dispr, pairwise = TRUE)) # still significant when we test for dispertion
+  plot(dispr, main = "Ordination Centroids and Dispersion Labeled: Aitchison Distance", sub = "")
+  #coef <- coefficients(veg_ad)["BNG_Inc",]
+  #top.coef <- coef[rev(order(abs(coef)))[1:20]]
+  
+}
+beta_permanova(V9_comp, sample_vars_V9$Pond)
+
+```
+
+## Heatmap of contributing ASVs
+I'm struggling to find an elegant computational way to extract the top 15 contributing ASVs to a vector from the factor extra PCA object, so doing it manually. Want to plot as a heatmap to visualise abundance between samples and ponds. 
+
+```{r top asvs heatmap tk2, include=TRUE, echo=FALSE}
+library(microbiomeutilities)
+contrib_asv <- c("ASV4", "ASV41", "ASV47", "ASV30", "ASV29", "ASV23", "ASV8", "ASV6", "ASV85", "ASV81", "ASV74", "ASV91", "ASV16", "ASV17", "ASV26") #manual curation of a vector for top 15 asvs contributing to dissimilarity between groups on PCA.
+
+ps_clr <- V9.pond
+otu_table(ps_clr) <- otu_table(V9_comp, taxa_are_rows = FALSE) # create a phyloseq object with compositional transformed counts
+ps_contrib_asv <- subset_taxa(ps_clr, rownames(tax_table(ps_clr)) %in% contrib_asv) # subset to keep only the top 15 taxa
+ps_contrib_asv
+
+sample_data(ps_contrib_asv)$Pond <- as.factor(sample_data(ps_contrib_asv)$Pond)
+
+
+custom_heatmap <- function(ps, VariableA, VariableB, core_tx){ #this function is lifted from microbiomeutilities::plot_taxa_heatmap, but bypassess their inforced transformations so you can
+    otu.mat <- abundances(ps)
+    otu.mat <- otu.mat[match(core_tx, rownames(otu.mat)),] #reorder otu table to match allocation of core otus (i.e. not numeric ascending)
+    #the swab samples are also in the incorrect order, here we extract the sample data and reorder by pond site, return just the sample names as a charatcer vector
+    sample_order <- sample_data(ps) %>% as.data.frame() %>% .[order(.$Pond),] %>% row.names()
+    otu.mat <- otu.mat[,match(sample_order, colnames(otu.mat))] #and reorder the otu table based on this
+  meta.tab <- meta(ps)
+  
+  # choose which variables of interest to include in
+  # the heatmap
+  select.meta.A <- subset(meta.tab, select = c(VariableA))
+  #select.meta.B <- subset(meta.tab, select = c(VariableB))
+  #col_df <- data.frame(select.meta.A, select.meta.B)
+  
+  newnames <- vector(mode="character")
+  tax_labels <- tax_table(ps)
+  #tax_labels <- tax_labels[match(s16_all_core, rownames(tax_labels)),]
+  #newnames <- paste(rownames(tax_labels),tax_labels[,"Class"])
+  #newnames <- lapply(newnames,
+  #  function(x) bquote(italic(.(x))))
+  
+  #for loop, to create a vector of the highest taxonomic classification avalabile to each ASV,for use as a label in plot
+m <- 1
+  highest_name <- vector(mode="character")
+  for(x in rownames(tax_labels)){
+    if(!is.na(tax_labels[x,"Genus"] %>% as.character())){
+      highest_name[m] <- tax_labels[x,"Genus"] %>% as.character()
+    }
+    else if(!is.na(tax_labels[x,"Family"] %>% as.character())){
+      highest_name[m] <- tax_labels[x,"Family"] %>% as.character() %>% paste(., "_F") %>% gsub(" ", "", .)
+    }
+    else if(!is.na(tax_labels[x,"Order"] %>% as.character())){
+      highest_name[m] <- tax_labels[x,"Order"] %>% as.character() %>% paste(., "_O") %>% gsub(" ", "", .)
+    }
+    else if(!is.na(tax_labels[x,"Class"] %>% as.character())){
+      highest_name[m] <- tax_labels[x,"Class"] %>% as.character() %>% paste(., "_C") %>% gsub(" ", "", .)
+    }
+    else if(!is.na(tax_labels[x,"Division"] %>% as.character())){
+      highest_name[m] <- tax_labels[x,"Division"] %>% as.character() %>% paste(., "_D") %>% gsub(" ", "", .)
+    }
+    else if(!is.na(tax_labels[x,"Supergroup"] %>% as.character())){
+      highest_name[m] <- tax_labels[x,"Supergroup"] %>% as.character() %>% paste(., "_S") %>% gsub(" ", "", .)
+    }
+    else if(!is.na(tax_labels[x,"Kingdom"] %>% as.character())){
+      highest_name[m] <- tax_labels[x,"Kingdom"] %>% as.character() %>% paste(., "_K") %>% gsub(" ", "", .)
+    }
+    else{print("Error, undefined taxonomy")}
+    newnames[m] <- paste(x, ":", highest_name[m]) #add the new labels as a vector, with highest tax classifcation and asv name.
+    m <- m + 1
+  }
+  #reorder otumat by rownames of tax label so new labels are assigned correctly
+  reorder.otu.mat <- otu.mat[match(rownames(tax_labels), rownames(otu.mat)),]
+  rownames(reorder.otu.mat) <- newnames #assign new ASV labels as rownmaes of df for plotting
+  
+  #phylo_tree <- ape::chronos(phy_tree(ps))
+  #phylo_hclust <- ape::as.hclust.phylo(phylo_tree)
+  
+  #annoCol <- list(Pond=c("1" = "#000000", "2" = "#D55E00", "3" = "#E69F00",
+  #                   "4" = "#56B4E9", "5" = "#009E73", "6" = "#CC79A7",
+  #                   "7" = "#0072B2"))
+  heatmap <- pheatmap::pheatmap(reorder.otu.mat,
+                                #cluster_rows = phylo_hclust,
+                                cluster_rows = TRUE,
+                                cluster_cols = FALSE,
+                                #labels_row = as.expression(newnames), #this created a problem with row labels incorrectly assigned to corresponding rows, soloution preassign labels to DF
+                                show_rownames = TRUE,
+                                annotation_col = select.meta.A,
+                                annotation_colors = annoCol.pond,
+                                #annotation_row = row_df,
+                                color = viridis::viridis(10))
+
+  
+  return(heatmap)
+}
+contrib_heatmap <- custom_heatmap(ps_contrib_asv, "Pond", "sample_type", contrib_asv)
+
+ggsave(here("results", "figures", "pond_18s_ordination.svg"), plot = pmain_V9, width = 6, height = 5, dpi = 600)
+
+#this is a better method to save, utilise cowplot to convert heatmap to a gg object, then can save as svg with ggsave.
+final_heatmap <- cowplot::plot_grid(contrib_heatmap$gtable, ncol = 1)
+ggsave(here("results", "figures", "contrib_heatmap_pond_18s.svg"), plot = final_heatmap, width = 8, height = 5, dpi = 600)
+
+```
