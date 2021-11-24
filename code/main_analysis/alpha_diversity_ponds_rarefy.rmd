@@ -1,0 +1,326 @@
+---
+title: "Alpha Diversity (16S and 18S) Malawi ponds"
+author: "Jamie McMurtrie"
+date: "21/6/2021"
+output: html_document
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, error = TRUE)
+knitr::opts_knit$set(root.dir = "C:/Users/jm1106/malawi_tilapia")
+```
+
+## Analysis of alpha diversity trends in pond water of Malawi
+Diversity is calculated on ASVs that have undergone 2% prevelance filtering to reduce sequencing noise.
+
+Alpha diversity is performed by traditional plugin diversity metrics: Chao1 richness score; Shannon diversity (evenness); and Inverse Simpson (evenness). Data is also rarefied to account for uneven library sizes between samples - particuarly as some comparisons may be drawn between swabs and pond water filters where library sizes drastically differ. Ideally would use more advanced statistical methods for alpha diversity developed by Amy Wilis' lab - DivNet and Breakaway which account for unobserved taxa in the community which are inherently missed by limited sequencing depth. However, the number of ASVs in this dataset is too large and the packages have not been implemented sufficently to run efficently with large data sets (crashes any HPC cluster tested on due to memory shortage) and multi-threading doesn't help. Divnet-rs has been released in rust, however, I ran out of time to attempt this and am unfamiliar with rust. Testing on a subset of tilapia microbiome data produced very concordent results in divnet, just a shame to be missing the confidence intervals it produces. 
+
+
+## R Setup Libraries
+
+```{r libraries, include=TRUE, echo=TRUE}
+library(tidyverse); packageVersion("tidyverse")
+library(phyloseq); packageVersion("phyloseq")
+library(RColorBrewer); packageVersion("RColorBrewer")
+library(ggpubr); packageVersion("ggpubr") # for publication-quality ggplots
+library(cowplot); packageVersion("cowplot") # for density plots
+library(here); packageVersion("here") # make the relative paths work
+library(DivNet); packageVersion("DivNet")
+library(breakaway); packageVersion("breakaway")
+```
+
+I first specify the colour palette
+```{r seed and plot settings, include=TRUE, echo=TRUE}
+theme_set(theme_bw())
+set.seed(1234)
+
+#refreshed colour palette to reflect geographical similarities in geographical location of pond sites
+cbPalette.ponds.geog <- c("1" = "#e6ab02", "2" = "#66a61e", "3" = "#1b9e77","4" = "#a6761d", "5" = "#d95f02", "6" = "#7570b3", "7" = "#e7298a")
+theme_set(theme(panel.background = element_blank(), axis.line = element_line(colour = "black")))
+#when plotting with ggplot, removes grid lines etc for a clean plot 
+```
+
+A useful function for cleaning up phyloseq objects after subsetting to remove any zero taxa or samples, and optionally transform counts to relative abundance. Second function for removing undesired taxa (by ASV name) from phyloseq objects.
+```{r phyloseq tidy up functions}
+tidyPS <- function(ps, RA){
+  ps <- prune_taxa(taxa_sums(ps) > 0, ps)
+  ps <- prune_samples(sample_sums(ps) > 0, ps)
+  if(RA == TRUE){
+    ps <- transform_sample_counts(ps, function(x){x / sum(x)})
+  }
+  return(ps)} 
+
+rm_contams <- function(physeq, badTaxa){
+  allTaxa <- taxa_names(physeq)
+  allTaxa <- allTaxa[!(allTaxa %in% badTaxa)]
+  return(prune_taxa(allTaxa, physeq))
+}
+```
+
+Reading in data and preparing phyloseq objects for analysis.
+```{r data setup}
+s16_ps <- readRDS(here("data", "process", "V4_phyloseq_obj_with_tree_prev_filt.rds")) #can't start variable names with numbers, hence s16 / s18 herein refers to 16s 18s
+s18_ps <- readRDS(here("data", "process", "V9_phyloseq_obj_with_tree_prev_filt.rds")) #note this 18S phyloseq object has had any 'cranitata' ASV removed i.e.tilapia 
+
+s16_ps_pond <- subset_samples(s16_ps, sample_type %in% "Pond") %>% tidyPS(., FALSE)
+s18_ps_pond <- subset_samples(s18_ps, sample_type %in% "Pond") %>% tidyPS(., FALSE)
+print("16S, subset to Malawi pond water")
+s16_ps_pond
+print("18S, subset to Malawi pond water")
+s18_ps_pond 
+
+set.seed(1234)
+s16_ps_pond <- rarefy_even_depth(s16_ps_pond) #removes 492 ASVs
+
+set.seed(1234)
+s18_ps_pond <- rarefy_even_depth(s18_ps_pond) #removes 187 ASVs
+
+sample_data(s16_ps_pond)$Pond <- as.factor(sample_data(s16_ps_pond)$Pond) #this changes time points from a continuous scale to categoric
+sample_data(s18_ps_pond)$Pond <- as.factor(sample_data(s18_ps_pond)$Pond)
+```
+
+## Plugin alpha metrics
+We first plot richness (Chao1) and diversity estimates (Inverse Simpson, Shannon). Then perform statistical tests on overall significance and pairwise tests between pond sites. 
+
+### Richness and alpha diversity in 16S (top) and 18S (bottom) datasets
+
+```{r fresh plot facet, include=TRUE, echo=FALSE}
+s16_alpha_ests <- estimate_richness(s16_ps_pond, measures = c("Chao1", "Shannon", "InvSimpson")) %>%
+              cbind(sample_data(s16_ps_pond)[,"Pond"])
+s16_alpha_ests$Pond <- as.factor(s16_alpha_ests$Pond)
+
+set.seed(1234)
+p_s16_chao <- ggplot(data = s16_alpha_ests, aes(x = Pond, y = Chao1, color = Pond)) +
+              #geom_jitter(shape=19, alpha=0.4, stroke = 1, size = 3, aes(color=Pond), show.legend=F) +
+              #geom_point(shape=19, alpha=0.4, stroke = 1, size = 3, aes(color=Pond), position = position_jitter(w = 0.3, h = 0), show.legend=F) +
+              geom_point(shape=19, alpha=0.4, stroke = 1, size = 3, aes(color=Pond), show.legend=F) +
+              stat_summary(fun = mean, geom = "crossbar", width = 0.8,
+                       aes(color=Pond), show.legend = F) +
+              scale_color_manual(values = cbPalette.ponds.geog) #+
+              #scale_y_continuous(limits = c(200, 1200), breaks = seq(200, 1200, 200))
+
+set.seed(1234)
+p_s16_shan <- ggplot(data = s16_alpha_ests, aes(x = Pond, y = Shannon, color = Pond)) +
+              geom_point(shape=19, alpha=0.4, stroke = 1, size = 3, aes(color=Pond), show.legend=F) +
+              stat_summary(fun = mean, geom = "crossbar", width = 0.8,
+                       aes(color=Pond), show.legend = F) +
+              scale_color_manual(values = cbPalette.ponds.geog) #+
+              #scale_y_continuous(limits = c(2.5, 5.5), breaks = seq(2.5, 5.5, 0.75))
+
+set.seed(1234)
+p_s16_simp <- ggplot(data = s16_alpha_ests, aes(x = Pond, y = InvSimpson, color = Pond)) +
+              geom_point(shape=19, alpha=0.4, stroke = 1, size = 3, aes(color=Pond), show.legend=F) +
+              stat_summary(fun = mean, geom = "crossbar", width = 0.8,
+                       aes(color=Pond), show.legend = F) +
+              scale_color_manual(values = cbPalette.ponds.geog) #+
+              #scale_y_continuous(limits = c(0,100), breaks = seq(0,100,25))
+
+p_s16 <- cowplot::plot_grid(p_s16_chao, 
+                         p_s16_shan,
+                         p_s16_simp, 
+                         ncol = 3, nrow = 1, rel_widths = c(1,1,1)) #arrange each set of 16s or 18s plots into a row with cowplot, and suppress legend in plot 1 and 2; suppress y axis title in plot 2 and 3
+
+s18_alpha_ests <- estimate_richness(s18_ps_pond, measures = c("Chao1", "Shannon", "InvSimpson")) %>%
+              cbind(sample_data(s18_ps_pond)[,"Pond"])
+s18_alpha_ests$Pond <- as.factor(s18_alpha_ests$Pond)
+
+set.seed(1234)
+p_s18_chao <- ggplot(data = s18_alpha_ests, aes(x = Pond, y = Chao1, color = Pond)) +
+              geom_point(shape=19, alpha=0.4, stroke = 1, size = 3, aes(color=Pond), show.legend=F) +
+              stat_summary(fun = mean, geom = "crossbar", width = 0.8,
+                       aes(color=Pond), show.legend = F) +
+              scale_color_manual(values = cbPalette.ponds.geog) #+
+              #scale_y_continuous(limits = c(200, 1200), breaks = seq(200, 1200, 200))
+
+set.seed(1234)
+p_s18_shan <- ggplot(data = s18_alpha_ests, aes(x = Pond, y = Shannon, color = Pond)) +
+              geom_point(shape=19, alpha=0.4, stroke = 1, size = 3, aes(color=Pond), show.legend=F) +
+              stat_summary(fun = mean, geom = "crossbar", width = 0.8,
+                       aes(color=Pond), show.legend = F) +
+              scale_color_manual(values = cbPalette.ponds.geog) #+
+              #scale_y_continuous(limits = c(2.5, 5.5), breaks = seq(2.5, 5.5, 0.75))
+
+set.seed(1234)
+p_s18_simp <- ggplot(data = s18_alpha_ests, aes(x = Pond, y = InvSimpson, color = Pond)) +
+              geom_point(shape=19, alpha=0.4, stroke = 1, size = 3, aes(color=Pond), show.legend=F) +
+              stat_summary(fun = mean, geom = "crossbar", width = 0.8,
+                       aes(color=Pond), show.legend = F) +
+              scale_color_manual(values = cbPalette.ponds.geog) #+
+              #scale_y_continuous(limits = c(0,100), breaks = seq(0,100,25))
+
+p_s18 <- cowplot::plot_grid(p_s18_chao, 
+                         p_s18_shan,
+                         p_s18_simp, 
+                         ncol = 3, nrow = 1, rel_widths = c(1,1,1)) #arrange each set of 16s or 18s plots into a row with cowplot, and suppress legend in plot 1 and 2; suppress y axis title in plot 2 and 3
+s16_s18_alpha_plot <- cowplot::plot_grid(p_s16, p_s18, ncol = 1, nrow =2) #here we combine the 16s and 18s plots together
+ggsave(here::here("results", "figures", "plugin_alpha_points.svg"), plot = s16_s18_alpha_plot, width = 9, height = 8, dpi = 600)
+```
+
+We see richness is quite similar across all ponds, and the order of pond sites by richness holds true across 16s and 18s data.
+These trends between 16s and 18s data are less conserved for the alpha diveristy metrics (shannon and invsimpson), which also sure more variability between pond sites. 
+
+## Stats testing
+Now onto our statistical hypothesis testing. Null hypothesis = no difference in diversity and richness between pond sites.
+
+Histograms are first produced to check normality, followed by in all cases (due to non perfect bell curve distribution) a welch ANOVA and Games-Howell post hoc. These tests are reasonably roboust with data that is not perfectly distributed i.e. normality, but is far more robust than ANOVA and wilcoxon to variance in group distributions. This we have seen is a regular occurrence in our microbiome data so important to consider it. 
+
+
+```{r alpha stats test, include=TRUE}
+alpha_welch <- function(ps, variableTest){ #declaring a big function that automates significance testing for all alpha tests given a phyloseq object
+  alpha <- estimate_richness(ps, measures = c("Chao1", "Shannon", "InvSimpson")) #use phyloseq to create the table of alpha diversity
+  coun_sam <- as.character((get_variable(ps, variableTest))) #extract sample type variable to be added to table
+  alpha[[5]] <- coun_sam #add these values in
+  colnames(alpha)[5] <- variableTest #rename to approriate variable name
+  alpha[[variableTest]] <- as.factor(alpha[[variableTest]]) #need this otherwise get a finite error for posthoc test
+  alphaTest <- c("Chao1", "Shannon", "InvSimpson")
+  for(i in alphaTest){
+    hist(alpha[[i]], main = i) #check normality of data https://rstudio-pubs-static.s3.amazonaws.com/330760_8bba830836324bf6b100d4e76f49e3d2.html
+    print(i)
+    print(oneway.test(alpha[[i]] ~ alpha[[variableTest]])) #welch one way anova
+    print(PMCMRplus::gamesHowellTest(alpha[[i]] ~ alpha[[variableTest]])) #gamesHowell psot hoc. Collectievly this tests do not make assumptions of equal variance
+    
+    welch_result <- oneway.test(alpha[[i]] ~ alpha[[variableTest]])
+    eps_effect <- effectsize::epsilon_squared(welch_result)
+    print(eps_effect)
+      }
+}
+cat("###16S")
+alpha_welch(s16_ps_pond, "Pond")
+cat("###18S")
+alpha_welch(s18_ps_pond, "Pond")
+
+```
+
+## Mean difference of diversities between ponds
+As an alternative to effect size I calculate the pairwise mean differences between alphad diversity and richness values. Unfortunately there is not an elegant package for producing the table-style plots I wanted, therefore I mannually create the plots based on the output values. 
+```{r mean diff}
+s16_alpha_ests
+s18_alpha_ests
+
+calc_mean <- function(alpha_ests, measure){
+  mean.tab <- alpha_ests[s16_alpha_ests$Pond == 1, measure] %>%
+              cbind(alpha_ests[alpha_ests$Pond == 2, measure]) %>%
+              cbind(alpha_ests[alpha_ests$Pond == 3, measure]) %>%
+              cbind(alpha_ests[alpha_ests$Pond == 4, measure]) %>%
+              cbind(alpha_ests[alpha_ests$Pond == 5, measure]) %>%
+              cbind(alpha_ests[alpha_ests$Pond == 6, measure]) %>%
+              cbind(alpha_ests[alpha_ests$Pond == 7, measure]) %>%
+              rbind(colMeans(.))
+colnames(mean.tab) <- c("P1","P2","P3","P4","P5","P6","P7")
+rownames(mean.tab) <- c(1:5, "Mean")
+return(mean.tab)
+} # function to calaculate mean alpha diversity of each pond site from all samples
+
+mean.chao1 <- colMeans(mean.chao1)
+calc_mean_diff <- function(mean.tab){
+  mean_diff_P1 <- c(mean.tab["Mean",1] - mean.tab["Mean",2],
+                    mean.tab["Mean",1] - mean.tab["Mean",3],
+                    mean.tab["Mean",1] - mean.tab["Mean",4],
+                    mean.tab["Mean",1] - mean.tab["Mean",5],
+                    mean.tab["Mean",1] - mean.tab["Mean",6],
+                    mean.tab["Mean",1] - mean.tab["Mean",7])
+  
+  mean_diff_P2 <- c(NA, mean.tab["Mean",2] - mean.tab["Mean",3],
+                    mean.tab["Mean",2] - mean.tab["Mean",4],
+                    mean.tab["Mean",2] - mean.tab["Mean",5],
+                    mean.tab["Mean",2] - mean.tab["Mean",6],
+                    mean.tab["Mean",2] - mean.tab["Mean",7])
+  
+  mean_diff_P3 <- c( NA, NA, mean.tab["Mean",3] - mean.tab["Mean",4],
+                    mean.tab["Mean",3] - mean.tab["Mean",5],
+                    mean.tab["Mean",3] - mean.tab["Mean",6],
+                    mean.tab["Mean",3] - mean.tab["Mean",7])
+
+  mean_diff_P4 <- c(NA, NA, NA, mean.tab["Mean",4] - mean.tab["Mean",5],
+                    mean.tab["Mean",4] - mean.tab["Mean",6],
+                    mean.tab["Mean",4] - mean.tab["Mean",7])
+  
+  mean_diff_P5 <- c(NA, NA, NA, NA, mean.tab["Mean",5] - mean.tab["Mean",6],
+                    mean.tab["Mean",5] - mean.tab["Mean",7])
+  
+  mean_diff_P6 <- c(NA, NA, NA, NA, NA, mean.tab["Mean",6] - mean.tab["Mean",7])
+  mean_diff <- data.frame(mean_diff_P1, mean_diff_P2, mean_diff_P3, mean_diff_P4, mean_diff_P5, mean_diff_P6)
+  row.names(mean_diff) <- c("P2","P3","P4","P5","P6","P7")
+  colnames(mean_diff) <- c("P1","P2","P3","P4","P5","P6")
+  return(mean_diff)
+} # function returns a pairwise comparison table of differences between means of each pond site
+
+mean.chao1_s16 <- calc_mean(s16_alpha_ests, "Chao1")
+mean.diff.chao1_s16 <- calc_mean_diff(mean.chao1_s16) %>% format(digits = 2)
+mean.shan_s16 <- calc_mean(s16_alpha_ests, "Shannon")
+mean.diff.shan_s16 <- calc_mean_diff(mean.shan_s16) %>% format(digits = 2)
+mean.simp_s16 <- calc_mean(s16_alpha_ests, "InvSimpson")
+mean.diff.simp_s16 <- calc_mean_diff(mean.simp_s16) %>% format(digits = 2)
+
+mean.chao1_s18 <- calc_mean(s18_alpha_ests, "Chao1")
+mean.diff.chao1_s18 <- calc_mean_diff(mean.chao1_s18) %>% format(digits = 2)
+mean.shan_s18 <- calc_mean(s18_alpha_ests, "Shannon")
+mean.diff.shan_s18 <- calc_mean_diff(mean.shan_s18) %>% format(digits = 2)
+mean.simp_s18 <- calc_mean(s18_alpha_ests, "InvSimpson")
+mean.diff.simp_s18 <- calc_mean_diff(mean.simp_s18) %>% format(digits = 2)
+```
+
+## Correlation
+We want to see if there is any cross over between microbial domains, where a high prokaryotic diversity correlates to a high microeukaryotic diversity in specific pond sites. Basic guide to correlation in R with ggpubr here http://www.sthda.com/english/wiki/correlation-test-between-two-variables-in-r
+
+```{r correlation, include=TRUE, echo=FALSE}
+library(data.table)
+s16_div <- estimate_richness(s16_ps_pond, measures = c("Chao1", "Shannon", "InvSimpson"))
+s18_div <- estimate_richness(s18_ps_pond, measures = c("Chao1", "Shannon", "InvSimpson"))
+s16_div2 <- cbind(s16_div, sample_data(s16_ps_pond)[,"sample_type"])
+s16_div2 <- cbind(s16_div2, sample_data(s16_ps_pond)[,"Pond"])
+s18_div2 <- cbind(s18_div, sample_data(s18_ps_pond)[,"sample_type"])
+s18_div2 <- cbind(s18_div2, sample_data(s18_ps_pond)[,"Pond"])
+
+#take a mean value for each group (pond site) with dplyr summarise and group_by 
+s16_est_mean <- s16_div2 %>% group_by(Pond) %>%
+  summarise(Shannon_mean=mean(Shannon), Shannon_sd=sd(Shannon), Chao1_mean=mean(Chao1), Chao1_sd=sd(Chao1), Simp_mean=mean(InvSimpson), Simp_sd=sd(InvSimpson))
+s18_est_mean <- s18_div2 %>% group_by(Pond) %>%
+  summarise(Shannon_mean=mean(Shannon), Shannon_sd=sd(Shannon), Chao1_mean=mean(Chao1), Chao1_sd=sd(Chao1), Simp_mean=mean(InvSimpson), Simp_sd=sd(InvSimpson))
+
+shannon_tab <- data.frame("Prokaryote" = s16_est_mean$Shannon_mean, "Microeukaryote" = s18_est_mean$Shannon_mean)
+richness_tab <- data.frame("Prokaryote" = s16_est_mean$Chao1_mean, "Microeukaryote" = s18_est_mean$Chao1_mean)
+simpson_tab <- data.frame("Prokaryote" = s16_est_mean$Simp_mean, "Microeukaryote" = s18_est_mean$Simp_mean)
+
+shapiro.test(shannon_tab$Prokaryote) # p = 0.16, normal distribution
+shapiro.test(shannon_tab$Microeukaryote) # p = 0.08, normal distribution. Okay to use pearson
+shapiro.test(richness_tab$Prokaryote) # p = 0.94, normal distribution
+shapiro.test(richness_tab$Microeukaryote) # p = 0.26, normal distribution. Okay to use pearson
+shapiro.test(simpson_tab$Prokaryote) # p = 0.90, normal distribution
+shapiro.test(simpson_tab$Microeukaryote) # p = 0.97, normal distribution. Okay to use pearson
+
+p1_shan <- ggscatter(shannon_tab, x = "Prokaryote", y = "Microeukaryote",
+                add = "reg.line", conf.int = TRUE, 
+                cor.coef = TRUE, cor.method = "pearson",
+                xlab = "Prokaryotes", ylab = "Microeukaryotes",
+                title = "Pond water Shannon diversity")
+p1_shan
+
+p2_rich <- ggscatter(richness_tab, x = "Prokaryote", y = "Microeukaryote",
+                add = "reg.line", conf.int = TRUE, 
+                cor.coef = TRUE, cor.method = "pearson",
+                xlab = "Prokaryotes", ylab = "Microeukaryotes",
+                title = "Pond water Chao1 richness")
+p2_rich
+
+p3_simp <- ggscatter(simpson_tab, x = "Prokaryote", y = "Microeukaryote",
+                add = "reg.line", conf.int = TRUE, 
+                cor.coef = TRUE, cor.method = "pearson",
+                xlab = "Prokaryotes", ylab = "Microeukaryotes",
+                title = "Pond water Inverse Simpson diversity")
+p3_simp
+correlation_plot <- cowplot::plot_grid(p2_rich, p1_shan, p3_simp, nrow = 3)
+ggsave(here("results", "figures", "pond_16svs18s_diversity.png"), plot = final_plot, width = 4, height = 9, dpi = 600)
+```
+
+
+
+When using all estimates we also see no significant correlation between shannon diversity, simpsion diversity or richness of bacteria and euks in pond water. this holds true for analysing either the whole asv table, prevelance filtered or the tree glommed table. 
+
+```{r save image}
+
+final_plot <- cowplot::plot_grid(s16_s18_alpha_plot, correlation_plot, ncol = 2, rel_widths = c(3,1))
+final_plot
+ggsave(here("results", "figures", "pond_alpha_diversity_correlation_rare.png"), plot = final_plot, width = 10, height = 8, dpi = 600)
+```
