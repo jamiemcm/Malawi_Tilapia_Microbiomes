@@ -1,0 +1,204 @@
+---
+title: "swab_core_genus"
+author: "Jamie McMurtrie"
+date: "08/07/2021"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, error = TRUE)
+knitr::opts_knit$set(root.dir = "C:/Users/jm1106/malawi_tilapia")
+```
+
+## Intro
+Core microbiome analysis seeks to find taxa conserved between samples above a defined prevalence threshold. In this case we are interested in finding the core MB of the tilapia skin community which is present in fish across different pond sites. Core calculations will be performed with the microbiome package. We will then visualise these core taxa as a heatmap using pheatmap. This will also reveal abundances across both pond and fish samples, indicating if the fish core taxa are in high abundance in the pond water and therefore potentially non-residents. Final visualisations for the finished figure requires some manual editing in Inkscape.
+
+## R Setup Libraries
+
+```{r libraries, include=TRUE, echo=TRUE}
+library(here); packageVersion("here") # make the relative paths work
+library(tidyverse); packageVersion("tidyverse")
+library(ggplot2); packageVersion("ggplot2")
+library(phyloseq); packageVersion("phyloseq")
+library(microbiomeutilities); packageVersion("microbiomeutilities") 
+library(RColorBrewer); packageVersion("RColorBrewer")
+library(microbiome); packageVersion("microbiome") 
+library(cowplot); packageVersion("cowplot") # for layouts
+library(zCompositions); packageVersion("zCompositions")
+library(CoDaSeq); packageVersion("CoDaSeq")
+```
+
+
+## Import phyloseq objects
+Weight up in choosing what taxa level to study. The full ASV set is large and requires a low core threshold as there is a reasonable degree of variation in ASVs e.g. likely different strains. However, in the core analysis we are most interested in the major types of organisms appearing to be common in either system. For instance we could have three individual ASVs of the same genus, each a key photosynthetic but only one is dominant per pond site, collectively though they are occupying the same niche. This is obviously a generalisation and not applicable to all scenarios. Most core studies I have seen group at genus level. 
+I did explore the use of tip_gloming instead to use a phylogenetic informed grouping level, rather than arbitrary taxonomy, but this compromises resolution of taxonomic classifications that I am not willing to accept. 
+```{r load data, include=TRUE}
+tidyPS <- function(ps, RA){
+  ps <- prune_taxa(taxa_sums(ps) > 0, ps)
+  ps <- prune_samples(sample_sums(ps) > 0, ps)
+  if(RA == TRUE){
+    otu_table(ps) <- transform_sample_counts(ps, function(x){x / sum(x)})
+  }
+  return(ps)} #small function to tidy ps object after subsetting to remove any zero taxa or samples, optionally transforms counts to relative abundance
+
+s16_ps_raw <- readRDS(here("data/process/V4_phyloseq_obj_with_tree_prev_filt.rds"))
+
+s16_ps_gen <- tidyPS(s16_ps_raw, FALSE) %>% tax_glom("Genus", NArm = FALSE) # full obj 5782 taxa, genus level only 976!
+
+set.seed(1234) 
+s16_ps <- rarefy_even_depth(s16_ps_gen) #removes 130 ASVs, leaving 846
+
+annoCol.pond <- list(Pond=c("1" = "#e6ab02", "2" = "#66a61e", "3" = "#1b9e77","4" = "#a6761d", "5" = "#d95f02", "6" = "#7570b3", "7" = "#e7298a"))
+annoCol.sampleType <- list(sample_type=c("Pond" = "#0072B2", "Swab" = "#CC79A7"))
+#pheatmap requires colour palletes as a list rather than named vector. 
+
+cbPalette.ponds.geog <- c("1" = "#e6ab02", "2" = "#66a61e", "3" = "#1b9e77","4" = "#a6761d", "5" = "#d95f02", "6" = "#7570b3", "7" = "#e7298a")
+cbPalette.sampleType <- c("Pond" = "#0072B2", "Swab" = "#CC79A7")
+```
+
+### Initial core computing
+Setting a detection threshold of 0.01% (within samples) and prevelance threshold of 80% (across samples).
+```{r subsets, include=TRUE, echo=FALSE}
+s16_ps_swab <- subset_samples(s16_ps, sample_type %in% "Swab") %>% tidyPS(., TRUE)
+s16_ps_swab #770 taxa by 32 samples
+
+s16_core_swab_taxa <- core_members(s16_ps_swab, detection = 0.01/100, prevalence = 80/100) #15 core
+s16_ps_swab@tax_table@.Data[s16_core_swab_taxa,]
+
+#there is a slight issue with genus glomming as glomming occurs at stated rank but also at higher ranks, i.e. we see ASV93 as a core genus, but this is actually a fairly meaningless taxa prior to subsetting and now represents all ASVs unclassified below kingdom level! This would be true for any rank with unclassified, so aim to remove ASV93
+
+s16_core_swab_taxa <- setdiff(s16_core_swab_taxa, "ASV93") #14 core 
+```
+
+### Draw heatmap
+Go back to the original phyloseq object to start afresh for a compositional centred log ratio transformation of abundances. 
+Utilise a hierarchical clustering dendrogram rather than phylogenetic.
+Log winded for loops to achieve taxa labels with the highest available taxonomic rank. 
+```{r pheatmap, include=TRUE, echo=FALSE}
+comp_trans <- function(ps, tran){
+  if(tran == "clr"){
+    CZM <- zCompositions::cmultRepl(otu_table(ps), method = "CZM") #zero replacement method, czm is more robust to zeros than gbm
+    clr <- CoDaSeq::codaSeq.clr(CZM) #computes clr log ratio transformation, and outputs as a matrix rather than a proprietary   non-coercible clr class
+    ps_clr <- ps #duplicate for a new phyloseq object to hold the CZM and clr transformed otu table
+    otu_table(ps_clr) <- otu_table(clr, taxa_are_rows = FALSE)
+    return(ps_clr)}
+  else if( tran == "philr"){
+    
+  }
+}
+s16_ps_clr <- s16_ps_gen %>% subset_samples(sample_type %in% c("Pond", "Swab")) %>% tidyPS(., FALSE) #resubset with raw counts, not relative abundance and no rarefaction
+s16_ps_clr_core <- comp_trans(s16_ps_clr, "clr") #compositional transformation BEFORE subsetting
+s16_ps_clr_core <- subset_taxa(s16_ps_clr_core, rownames(tax_table(s16_ps_clr_core)) %in% s16_core_swab_taxa)
+sample_data(s16_ps_clr_core)$Pond <- as.factor(sample_data(s16_ps_clr_core)$Pond)
+s16_ps_clr_core
+
+custom_heatmap <- function(ps, VariableA, VariableB, core_tx, s16_or_18){ 
+    otu.mat <- abundances(ps)
+    otu.mat <- otu.mat[match(core_tx, rownames(otu.mat)),] #reorder otu table to match allocation of core otus (i.e. not numeric ascending)
+    #the swab samples are also in the incorrect order, here we extract the sample data and reorder by pond site, return just the sample names as a charatcer vector
+    #sample_order <- sample_data(ps) %>% as.data.frame() %>% .[order(.$Pond),] %>% row.names()
+    sample_order_P <- subset_samples(ps, sample_type %in% "Pond") %>% sample_data() %>% as.data.frame() %>% .[order(.$Pond),] %>% row.names()
+    sample_order_S <- subset_samples(ps, sample_type %in% "Swab") %>% sample_data() %>% as.data.frame() %>% .[order(.$Pond),] %>% row.names()
+    sample_order <- c(sample_order_P, sample_order_S)
+    otu.mat <- otu.mat[,match(sample_order, colnames(otu.mat))] #and reorder the otu table based on this
+  meta.tab <- meta(ps)
+  
+  # choose which variables of interest to include in
+  # the heatmap
+  select.meta.A <- subset(meta.tab, select = c(VariableA))
+  select.meta.B <- subset(meta.tab, select = c(VariableB))
+  col_df <- data.frame(select.meta.A, select.meta.B) #note use this line when including two annotations,
+  
+  newnames <- NULL
+  tax_labels <- tax_table(ps)
+  tax_labels <- tax_labels[match(core_tx, rownames(tax_labels)),]
+  if(s16_or_18 == "s16"){
+    m <- 1
+    highest_name <- vector(mode="character")
+    for(x in rownames(tax_labels)){
+      if(!is.na(tax_labels[x,"Genus"] %>% as.character())){
+        highest_name[m] <- tax_labels[x,"Genus"] %>% as.character()
+      }
+      else if(!is.na(tax_labels[x,"Family"] %>% as.character())){
+        highest_name[m] <- tax_labels[x,"Family"] %>% as.character() %>% paste(., "_F") %>% gsub(" ", "", .)
+      }
+      else if(!is.na(tax_labels[x,"Order"] %>% as.character())){
+        highest_name[m] <- tax_labels[x,"Order"] %>% as.character() %>% paste(., "_O") %>% gsub(" ", "", .)
+      }
+      else if(!is.na(tax_labels[x,"Class"] %>% as.character())){
+        highest_name[m] <- tax_labels[x,"Class"] %>% as.character() %>% paste(., "_C") %>% gsub(" ", "", .)
+      }
+      else if(!is.na(tax_labels[x,"Phylum"] %>% as.character())){
+        highest_name[m] <- tax_labels[x,"Phylum"] %>% as.character() %>% paste(., "_P") %>% gsub(" ", "", .)
+      }
+      else if(!is.na(tax_labels[x,"Kingdom"] %>% as.character())){
+        highest_name[m] <- tax_labels[x,"Kingdom"] %>% as.character() %>% paste(., "_K") %>% gsub(" ", "", .)
+      }
+      else{print("Error, undefined taxonomy")}
+      newnames[m] <- paste(x, ":", highest_name[m]) #add the new labels as a vector, with highest tax classifcation and asv name.
+      m <- m + 1
+  }
+    }
+  else if(s16_or_18 == "s18"){
+     m <- 1
+     highest_name <- vector(mode="character")
+     for(x in rownames(tax_labels)){
+       if(!is.na(tax_labels[x,"Genus"] %>% as.character())){
+         highest_name[m] <- tax_labels[x,"Genus"] %>% as.character()
+       }
+       else if(!is.na(tax_labels[x,"Family"] %>% as.character())){
+         highest_name[m] <- tax_labels[x,"Family"] %>% as.character() %>% paste(., "_F") %>% gsub(" ", "", .)
+       }
+       else if(!is.na(tax_labels[x,"Order"] %>% as.character())){
+         highest_name[m] <- tax_labels[x,"Order"] %>% as.character() %>% paste(., "_O") %>% gsub(" ", "", .)
+       }
+       else if(!is.na(tax_labels[x,"Class"] %>% as.character())){
+         highest_name[m] <- tax_labels[x,"Class"] %>% as.character() %>% paste(., "_C") %>% gsub(" ", "", .)
+       }
+       else if(!is.na(tax_labels[x,"Division"] %>% as.character())){
+         highest_name[m] <- tax_labels[x,"Division"] %>% as.character() %>% paste(., "_D") %>% gsub(" ", "", .)
+       }
+       else if(!is.na(tax_labels[x,"Supergroup"] %>% as.character())){
+         highest_name[m] <- tax_labels[x,"Supergroup"] %>% as.character() %>% paste(., "_S") %>% gsub(" ", "", .)
+       }
+       else if(!is.na(tax_labels[x,"Kingdom"] %>% as.character())){
+         highest_name[m] <- tax_labels[x,"Kingdom"] %>% as.character() %>% paste(., "_K") %>% gsub(" ", "", .)
+       }
+       else{print("Error, undefined taxonomy")}
+       newnames[m] <- paste(x, ":", highest_name[m]) #add the new labels as a vector, with highest tax classifcation and asv name.
+       m <- m + 1
+     }}
+  else{
+       print("Provide appropriate s16 or s18 entry")
+       exit
+  }
+  
+  #reorder otumat by rownames of tax label so new labels are assigned correctly
+  reorder.otu.mat <- otu.mat[match(rownames(tax_labels), rownames(otu.mat)),]
+  rownames(reorder.otu.mat) <- newnames #assign new ASV labels as rownmaes of df for plotting
+  
+  heatmap <- pheatmap::pheatmap(reorder.otu.mat,
+                                #cluster_rows = phylo_hclust,
+                                gaps_col = 35, #alter column gap position based on number of samples
+                                cluster_rows = TRUE,
+                                cluster_cols = FALSE,
+                                #labels_row = as.expression(newnames),
+                                show_rownames = TRUE,
+                                show_colnames = FALSE,
+                                annotation_col = col_df, #change to select.meta.A if only one annotation needed
+                                annotation_colors = list(Pond = cbPalette.ponds.geog, sample_type = cbPalette.sampleType), #if only one annotation, need to use annoCol.pond which is already a list
+                                #annotation_row = row_df,
+                                color = viridis::viridis(10))
+  
+  
+  return(heatmap)
+}
+
+s16_core_clr_hm <- custom_heatmap(s16_ps_clr_core, "Pond", "sample_type", s16_core_swab_taxa, "s16")
+s16_core_clr_hm
+
+
+#this is a better method to save, utilise cowplot to convert heatmap to a gg object, then can save as svg with ggsave. 
+s16_final_heatmap <- cowplot::plot_grid(s16_core_clr_hm$gtable, ncol = 1)
+ggsave(here("results", "figures", "core_genus_swab_16s_rarefied.svg"), plot = s16_final_heatmap, width = 10, height = 5, dpi = 600)
+
+```
