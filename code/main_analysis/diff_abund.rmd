@@ -1,0 +1,152 @@
+---
+title: "Corncob differentional abundance"
+author: "Jamie McMurtrie"
+date: "17/06/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, error = TRUE)
+knitr::opts_knit$set(root.dir = "C:/Users/jm1106/malawi_tilapia")
+```
+## Set up
+```{r libraries, include=TRUE}
+library(tidyverse); packageVersion("tidyverse")
+library(phyloseq); packageVersion("phyloseq")
+library(RColorBrewer); packageVersion("RColorBrewer")
+library(ggpubr); packageVersion("ggpubr") # for publication-quality ggplots
+library(here); packageVersion("here") # make the relative paths work
+library(corncob); packageVersion("corncob") #advanced modelling of differential abundance
+library(ggtree); packageVersion("ggtree")
+```
+
+```{r seed and plot settings, include=TRUE}
+theme_set(theme_bw())
+set.seed(1234)
+
+theme_set(theme(panel.background = element_blank(), axis.line = element_line(colour = "black")))
+#when plotting with ggplot, removes grid lines etc for a clean plot
+
+#refreshed colour palette to reflect geographical similarities in geographical location of pond sites
+cbPalette.ponds.geog <- c("1" = "#e6ab02", "2" = "#66a61e", "3" = "#1b9e77","4" = "#a6761d", "5" = "#d95f02", "6" = "#7570b3", "7" = "#e7298a")
+
+#colours for pond sites
+cbPalette.phyla <- c("Proteobacteria" = "#332288", "Bacteroidota" = "#117733",
+                     "Verrucomicrobiota" = "#44AA99", "Planctomycetota" = "#88CCEE", 
+                     "Firmicutes" = "#DDCC77", "Actinobacteriota" = "#CC6677",
+                     "Cyanobacteria" = "#AA4499", "Fusobacteriota" = "#882255")
+```
+
+```{r load data, include=TRUE}
+#our regular handy tidy up function for phyloseq objects
+tidyPS <- function(ps, RA){
+  ps <- prune_taxa(taxa_sums(ps) > 0, ps)
+  ps <- prune_samples(sample_sums(ps) > 0, ps)
+  if(RA == TRUE){
+    ps <- transform_sample_counts(ps, function(x){x / sum(x)})
+  }
+  return(ps)} #small function to tidy ps object after subsetting to remove any zero taxa or samples, optionally transforms counts to relative abundance
+
+s16_ps <- readRDS(here("data", "process", "V4_phyloseq_obj_with_tree_prev_filt.rds"))
+
+s16_ps_pond_swab <- subset_samples(s16_ps, sample_type %in% c("Swab", "Pond")) %>% tidyPS(., FALSE) #remove the incubates
+sample_data(s16_ps_pond_swab)$Pond <- as.factor(sample_data(s16_ps_pond_swab)$Pond)
+s16_ps_pond_swab
+```
+
+During exploratory analysis tried a number of approaches (mainly aldex and corncob), however settled on the use of corncob (slightly more sensitive) on prevelance filtered ASVs.
+
+```{r corncob, include=TRUE, echo=FALSE}
+#s16_phylum <- tax_glom(s16_ps_pond_swab, "Phylum") # can be helpful to run the model at phylum level first while desciding paramters as it has a long run time. 
+s16_corn <- differentialTest(formula = ~ sample_type + Pond,
+                         phi.formula = ~ 1, #set as 1 because we don't want to test for significant dispersion
+                         formula_null = ~ Pond, #testing for significant differential abundance between sample types, while controlling for pond site as a random effect
+                         phi.formula_null = ~ 1,
+                         test = "LRT", boot = FALSE,
+                         data = s16_ps_pond_swab,
+                         fdr_cutoff = 0.05)
+
+#due to long run time best to save the model and reload as required
+saveRDS(s16_corn, here("data", "process", "corncob_16s_prev_filt.rds"))
+s16_corn <- readRDS(here("data", "process", "corncob_16s_prev_filt.rds"))
+
+summary(s16_corn)
+s16_corn$significant_taxa
+plot(s16_corn)
+
+sort(s16_corn$significant_taxa) # 59 from corncob
+#Interesting to know if this is down to controlling for pond site effects, or purely methodological
+#no control of pond site increases significant taxa to 100
+```
+So we have our list of 59 differentially abundant taxa, at the moment in chronological order. We need to decide how to display this. I think it would be usefully to incorporate phylogeny. How about a dendrogram...
+
+```{r re plot corncob with phylogeny, include=TRUE, echo=FALSE}
+ps_corncob <- subset_taxa(s16_ps_pond_swab, rownames(tax_table(s16_ps_pond_swab)) %in% s16_corn$significant_taxa) %>% tidyPS(., FALSE)
+ps_corncob
+s16_corn_out <- plot(s16_corn, data_only = TRUE) #get the data from corncob, estimates and error intervals!
+s16_corn_out$ASV <- s16_corn$significant_taxa
+
+taxa_info <- data.frame(tax_table(ps_corncob)@.Data)
+  taxa_info <- taxa_info %>% tibble::rownames_to_column(var = "ASV") #transfer asv names to OTU column, to be used for table joining
+  s16_corn_out <- left_join(s16_corn_out, taxa_info) %>% #join taxonomy in to one table with aldex2 calculated DA
+                        dplyr::select(-c("taxa", "variable")) #remove redundant columns
+
+n <- 1
+  effect_bool <- vector(mode="character")
+  for(x in s16_corn_out$x){
+    if(x > 0){effect_bool[n] = "Swab"}
+    else{effect_bool[n] = "Pond"}
+    n <- n + 1
+  } #for loop to create a logical vector determining positive or negative, ie, sample type enrichment
+  s16_corn_out <- s16_corn_out %>% add_column(sample_type = (effect_bool) , .before = "Kingdom") #add the new negative / positive column
+
+
+p_tree <- ggtree::ggtree(ps_corncob@phy_tree, branch.length = 'none')#plot the phylogentic tree
+tree_position <- p_tree[["data"]] %>% select(label, y) %>% na.omit()  #take the tip labels and y coordinates of each tip, remove y coords with NA tip labels
+tree_position <- tree_position[order(as.integer(tree_position$y),decreasing = FALSE), ] #reorder based on y coord for tree order
+tree_position$label
+
+s16_corn_out <- s16_corn_out[match(tree_position$label, s16_corn_out$ASV),] #reorder df by tree order
+
+
+#for loop, to create a vector of the highest taxonomic classification avalabile to each ASV,for use as a label in plot
+m <- 1
+  highest_name <- vector(mode="character")
+  for(x in row.names(s16_corn_out)){
+    if(!is.na(s16_corn_out[x,"Genus"] %>% as.character())){
+      highest_name[m] <- s16_corn_out[x,"Genus"] %>% as.character()
+    }
+    else if(!is.na(s16_corn_out[x,"Family"] %>% as.character())){
+      highest_name[m] <- s16_corn_out[x,"Family"] %>% as.character()
+    }
+    else if(!is.na(s16_corn_out[x,"Order"] %>% as.character())){
+      highest_name[m] <- s16_corn_out[x,"Order"] %>% as.character()
+    }
+    else if(!is.na(s16_corn_out[x,"Class"] %>% as.character())){
+      highest_name[m] <- s16_corn_out[x,"Class"] %>% as.character()
+    }
+    else{print("Error, undefined taxonomy at Class level")}
+    m <- m + 1
+  }
+  s16_corn_out$y_axis_label <- paste(s16_corn_out$ASV, " : ", highest_name) #add the new labels as a column, with highest tax classifcation and asv name.
+s16_corn_out$y_axis_label <- factor(s16_corn_out$y_axis_label , levels = rev(s16_corn_out$y_axis_label)) ##ggplot reorders unless you lock in the factor, and reverse so first asv is at top, not bottom
+
+#***now to plot
+
+theme_set(theme_bw())
+p3 <- ggplot(data = s16_corn_out, aes(x=x, y=y_axis_label)) +
+  geom_errorbar(aes(xmin=xmin, xmax=xmax)) +
+  geom_point(size = 4, aes(color = Phylum)) + #color according to phylum, not add after error bar so it sits on top
+  labs(x = "Effect Size", y = "Differentially abundant genera") +
+  geom_vline(xintercept=0, linetype="dashed", color = "red") + #add x intercept line
+  scale_y_discrete(position = "right") +  #move axis position so tree can be aligned left
+  scale_color_manual(values = cbPalette.phyla)
+
+p3
+ggsave(here("results", "figures", "diff_abund_s16.svg"), plot = p3, width = 10, height = 7, dpi = 600)
+ggsave(here("results", "figures", "tree_test.svg"), plot = p_tree, width = 10, height = 7, dpi = 600)
+
+
+```
+Aligning is very challenging, multiple options like facet plot, or this link https://thackl.github.io/ggtree-composite-plots and aplot::ylim2, but they are all fiddily. Inelegant but straight forward to combine together on inkscape and rescale. 
+
