@@ -1,0 +1,293 @@
+---
+title: "Diversity correlation"
+author: "Jamie McMurtrie"
+date: "27/05/2021"
+output: html_document
+---
+From observing individual diversity and richness values of each pond site for water and skin, it looks like high diversity of pond water may correlate with a high skin diversity. Want to explore this further with a proper correlation plot and test. Basic guide to correlation in R with ggpubr here http://www.sthda.com/english/wiki/correlation-test-between-two-variables-in-r
+While initial test versions (with the tip glommed object) used divnet for individual estimates per pond site, unfortunately the full (prev_filt) object is too large for divnet- out of memory crashes on the HPC. Therefore going to have to settle with plugin estimates, then take a mean from each sample to get a pond site estimate. 
+We will also rarefy first to account for the unequal library sizes which is particularly noticeable between the two sample types, although in general I'm not a fan of rarefying and for this study rarefying vs raw counts make no difference to conclusions drawn for alpha diversity stats.
+
+```{r knitr setup, include=FALSE}
+require("knitr")
+opts_chunk$set(echo = FALSE, error = TRUE)
+opts_knit$set(root.dir = "C:/Users/jm1106/malawi_tilapia")
+```
+
+## Set-up
+
+```{r libraries, include=TRUE}
+library(tidyverse); packageVersion("tidyverse")
+library(phyloseq); packageVersion("phyloseq")
+library(RColorBrewer); packageVersion("RColorBrewer")
+library(ggpubr); packageVersion("ggpubr") # for publication-quality ggplots
+library(cowplot); packageVersion("cowplot") # for density plots
+library(here); packageVersion("here") # make the relative paths work
+library(DivNet); packageVersion("DivNet")
+library(breakaway); packageVersion("breakaway")
+library(VennDiagram); packageVersion("VennDiagram")
+```
+
+```{r seed and plot settings, include=TRUE}
+theme_set(theme_bw())
+set.seed(1234)
+
+#colours for sample type
+cbPalette.sampleType <- c("Pond" = "#0072B2", "Swab" = "#CC79A7")
+cbPalette.sampleTypeComp <- c("Pond" = "#0072B2", "Swab" = "#CC79A7", "Pond_Swab" = "#52006A")
+theme_set(theme(panel.background = element_blank(), axis.line = element_line(colour = "black")))
+#when plotting with ggplot, removes grid lines etc for a clean plot 
+```
+
+## Import phyloseq objects
+
+```{r load data, include=TRUE}
+#our regular handy tidy up function for phyloseq objects
+tidyPS <- function(ps, RA){
+  ps <- prune_taxa(taxa_sums(ps) > 0, ps)
+  ps <- prune_samples(sample_sums(ps) > 0, ps)
+  if(RA == TRUE){
+    transform_sample_counts(ps, function(x){x / sum(x)})
+  }
+  return(ps)} #small function to tidy ps object after subsetting to remove any zero taxa or samples, optionally transforms counts to relative abundance
+
+s16_ps <- readRDS(here("data", "process", "V4_phyloseq_obj_with_tree_prev_filt.rds"))
+#s18_ps <- readRDS(here("data", "process", "V9_phyloseq_obj_with_tree_prev_filt.rds")) #and the 18s V9
+
+set.seed(1234)
+s16_ps_pond_swab <- subset_samples(s16_ps, sample_type %in% c("Swab", "Pond")) %>% tidyPS(., FALSE) %>% rarefy_even_depth()
+sample_data(s16_ps_pond_swab)$Pond <- as.factor(sample_data(s16_ps_pond_swab)$Pond)
+s16_ps_pond_swab
+```
+We will start off using the standard diversity indicies (shanon and chao1), calcualted via phyloseq estimate_richness function.
+```{r div ests plugin take 2, include=TRUE, echo=FALSE}
+library(data.table)
+s16_div <- estimate_richness(s16_ps_pond_swab, measures = c("Chao1", "Shannon", "InvSimpson"))
+s16_div2 <- cbind(s16_div, sample_data(s16_ps_pond_swab)[,"sample_type"])
+s16_div2 <- cbind(s16_div2, sample_data(s16_ps_pond_swab)[,"Pond"])
+pond_ests <- filter(s16_div2, sample_type == "Pond")
+swab_ests <- filter(s16_div2, sample_type == "Swab")
+
+#use dplyr summarise and group_by to group by the pond site, and take a mean value for each group
+pond_est_mean <- pond_ests %>% group_by(Pond) %>%
+  summarise(Shannon_mean=mean(Shannon), Shannon_sd=sd(Shannon), Chao1_mean=mean(Chao1), Chao1_sd=sd(Chao1), Simp_mean=mean(InvSimpson), Simp_sd=sd(InvSimpson))
+swab_est_mean <- swab_ests %>% group_by(Pond) %>%
+  summarise(Shannon_mean=mean(Shannon), Shannon_sd=sd(Shannon), Chao1_mean=mean(Chao1), Chao1_sd=sd(Chao1), Simp_mean=mean(InvSimpson), Simp_sd=sd(InvSimpson))
+
+#create a df for each indicie with a single value per pond site, comparing the two sample types
+shannon_tab <- data.frame("Pond" = pond_est_mean$Shannon_mean, "Swab" = swab_est_mean$Shannon_mean)
+richness_tab <- data.frame("Pond" = pond_est_mean$Chao1_mean, "Swab" = swab_est_mean$Chao1_mean)
+simpson_tab <- data.frame("Pond" = pond_est_mean$Simp_mean, "Swab" = swab_est_mean$Simp_mean)
+
+shapiro.test(shannon_tab$Swab) # p = 0.667, normal distribution
+shapiro.test(shannon_tab$Pond) # p = 0.192, normal distribution. Okay to use pearson
+shapiro.test(richness_tab$Swab) # p = 0.022, non-normal distribution, need to use spearman
+shapiro.test(richness_tab$Pond) # p = 0.577, normal distribution. 
+shapiro.test(simpson_tab$Swab) # p = 0.955, normal distribution
+shapiro.test(simpson_tab$Pond) # p = 0.837, normal distribution. Okay to use pearson
+
+p1_shan <- ggscatter(shannon_tab, x = "Pond", y = "Swab",
+                add = "reg.line", conf.int = TRUE, 
+                cor.coef = TRUE, cor.method = "pearson",
+                xlab = "Pond water", ylab = "Fish skin",
+                title = "Shannon diversity")
+p1_shan
+
+p2_rich <- ggscatter(richness_tab, x = "Pond", y = "Swab",
+                add = "reg.line", conf.int = TRUE, 
+                cor.coef = TRUE, cor.method = "spearman",
+                xlab = "Pond water", ylab = "Fish skin",
+                title = "Chao1 richness")
+p2_rich
+
+p3_simp <- ggscatter(simpson_tab, x = "Pond", y = "Swab",
+                add = "reg.line", conf.int = TRUE, 
+                cor.coef = TRUE, cor.method = "pearson",
+                xlab = "Pond water Inverse Simpson diversity", ylab = "Fish skin Inverse Simpson diversity")
+p3_simp
+cowplot::plot_grid(p2_rich, p1_shan, nrow = 2)
+```
+
+Excellent, we have the correlation plot now, and after separating by pond site we can see no correlation in any richness or diversity indicie between pond water and fish skin.
+The downside of this graph is only 7 data points, one per site. This makes the correlation look underpowered as we don't have many data point, however, underlying each estimate is many more replicates. We can't add normal error bars of these estimates, as each point is a water vs swab, so has two separate error bounds. I suppose it might be possible to add both horizontal and vertical error bars to each point?
+
+NEXT UP Violins of richness comparing pond vs swab. 
+
+```{r diversity violins, include=TRUE, echo=FALSE}
+
+rich_plot <- ggpubr::ggviolin(s16_div2, x="sample_type", xlab=F, y = "Chao1",
+                            ylab=expression("ASV Richness"),
+                            palette = cbPalette.sampleType,
+                            #trim = TRUE,
+                            fill="sample_type",
+                            outlier.shape = NA,
+                            alpha=.3,
+                            color="sample_type") +
+        geom_jitter(position = position_jitter(0.2), shape=19,
+                    size = 2.5, show.legend=F,
+                    aes(color=sample_type)) + theme(legend.position = 'none') +
+  stat_summary(fun.data="mean_sdl", geom="pointrange", color = "black" )
+        #stat_compare_means(label.y = 100, label.x=1, method="wilcox.test")
+
+rich_plot
+  #ggpar(rich_plot, ylim = c(0,1000))
+oneway.test(s16_div2$Chao1 ~ s16_div2$sample_type) #classical welch t test for illustrative purpose, but not appropriate as no account of pond site.
+hist(s16_div2$Chao1)
+shapiro.test(s16_div2$Chao1) #guassian distr
+
+#rich_stat_lm <- lm(Chao1 ~ sample_type, data = s16_div2)
+#summary(rich_stat)
+
+library(lme4)
+rich_stat_lmer <- lmerTest::lmer(Chao1 ~ sample_type + (1 | Pond), data = s16_div2) #using lmerTest version of lmer includes a p value, questionable the utility of the p value but if we want it...
+
+summary(rich_stat_lmer)
+anova(rich_stat_lmer)
+sresid <- resid(rich_stat_lmer, type="pearson")
+hist(sresid)
+library(MuMIn)
+r.squaredGLMM(rich_stat_lmer) #obtain marginal R2 and conditional R2 values for model.
+
+```
+https://www.datacamp.com/community/tutorials/linear-regression-R
+https://ourcodingclub.github.io/tutorials/mixed-models/
+
+### Interpretation of statistical testing
+Previously utilised betta_random of the breakaway package, but not trying own mixed-effects model to account for pond site as a random effect as these are repeated measures, instead of a simple ttest.
+Model formula: lmer(Chao1 ~ sample_type + (1 | Pond)
+We see the fixed effect sample type does significantly differ p <0.001 (7.18e-12), with swab samples -503 lower (+- 59) than pond samples (1068+-70). Note the intercept significance is fairly irrelevant as this shows the intercept (pond samples) is sig dif from 0. So what... We are interested in the p of the fixed effect swab in this case.
+
+R2 values also indicate how much variance is explained by the effects of the model.
+Marginal R2 = 0.45, so the fixed variables (sample type) explain 45% of the variation in the dependant variable (richness).
+Conditional R2 = 0.61, the entire model (fixed variables plus random variables(pond site)) explains 61% of the variance in richness. 
+
+```{r shannon pond site diversity, include=TRUE, echo=FALSE}
+swab_est_mean$sample_type <- "Swab"
+pond_est_mean$sample_type <- "Pond"  
+comb_est_mean <- rbind(swab_est_mean, pond_est_mean)
+
+shannon_plot <- ggplot(data = comb_est_mean, aes(x = Pond, y = Shannon_mean, color = sample_type)) +
+  geom_point(position=position_dodge(width=0.5), size =3) +
+  geom_linerange(aes(ymin = Shannon_mean-Shannon_sd, ymax = Shannon_mean+Shannon_sd), position=position_dodge(width=0.5)) +
+  ylab("Shannon diversity") +
+  xlab("Ponds") +
+  #theme_minimal() + 
+  scale_color_manual(values = cbPalette.sampleType)
+
+shannon_plot 
+
+shan_stat_lmertest <- lmerTest::lmer(Shannon ~ sample_type + (1 | Pond), data = s16_div2)
+summary(shan_stat_lmertest)
+r.squaredGLMM(shan_stat_lmertest) #obtain marginal R2 and conditional R2 values for model.
+
+```
+When testing shannon diversity, we now see there is no siginificant difference between diversity of pond water and fish skin (p = 0.115), although the model predicts fish skin to be slightly (0.24) less diverse than water. Additionally, looking at R2 values, the full model (condiional r2) does explain more variance than just the fixed variable of samples type (marginal R2), yet the overal R2 explains little overall variance in diversity R2c = 0.11
+
+Unfortunately the 18S skin swab samples have so few asvs, due to heavy filtering removal of contaminant tilapia ASVs. Therefore comparisons are pretty inaccurate, with the skin microeukaroyte community very undersampled.
+
+
+So there we have it. I prefer the individual points plotting of shannon diversity, rather than box plot. As you can see the variation between pond sites clearly. Stats testing reveals a very marginal decrease in diversity for fish, but non significant.
+
+
+## Athcinson distance boxplot
+Observe difference in beta diversity between sample types by plotting the atchinson distance difference between sample types as boxplots.
+```{r atchinson box plots, include=TRUE, echo=FALSE}
+#first we need to change the phyloseq object so there is no rarefaction Log ratio approaches negate the need for rarefaction normalisation of library sizes.
+s16_ps_pond_swab_log <- subset_samples(s16_ps, sample_type %in% c("Swab", "Pond")) %>% tidyPS(., FALSE) 
+sample_data(s16_ps_pond_swab_log)$Pond <- as.factor(sample_data(s16_ps_pond_swab_log )$Pond)
+
+s16_czm <- zCompositions::cmultRepl(otu_table(s16_ps_pond_swab_log), method = "CZM")
+s16_comp <- CoDaSeq::codaSeq.clr(s16_czm) 
+s16_dist <- dist(s16_comp, method = "euclidean") #calculate distance
+s16_distM <- reshape2::melt(as.matrix(s16_dist))
+
+# remove self-comparisons
+  s16_distM <- s16_distM %>%
+    filter(as.character(Var1) != as.character(Var2)) %>%
+    mutate_if(is.factor,as.character)
+  
+  # get sample data (S4 error OK and expected)
+  s16_samdata <- as.data.frame(sample_data(s16_ps_pond_swab_log))
+  s16_sd <- setNames(data.frame(matrix(ncol = 3, nrow = 67)), c("sampleID", "sample_type", "Pond"))
+  s16_sd$sampleID <- s16_samdata %>% rownames()
+  s16_sd$sample_type <- as.vector(s16_samdata$sample_type)
+  s16_sd$Pond <- as.vector(s16_samdata$Pond)  
+  
+   # combined distances with sample data
+  colnames(s16_sd) <- c("Var1", "Type1", "Pond")
+  dist.sd.1 <- left_join(s16_distM, s16_sd, by = "Var1")
+  colnames(s16_sd) <- c("Var2", "Type2", "Pond")
+  dist.sd.2 <- left_join(s16_distM, s16_sd, by = "Var2")
+  dist.sd.full <- merge(dist.sd.1, dist.sd.2, by=c("Var1", "Var2", "value"))
+  
+   #add comparison column
+  dist.sd.full <- unite(dist.sd.full, Comparison, c("Type1", "Type2"), sep = "_", remove = FALSE)
+  dist.sd.full <- dist.sd.full[!(dist.sd.full$Comparison == "Swab_Pond"),] #keep only Pond_swab comparisons and delete swab_pond as they are the exact same.
+  dist.sd.single.pond <- dist.sd.full[(dist.sd.full$Pond.x == dist.sd.full$Pond.y),] #remove comparisons not within the same site
+  
+  n <- 1 # add a fresh label so we have less long labels
+    for(x in dist.sd.single.pond$Comparison){
+      if(x == "Pond_Pond"){
+        dist.sd.single.pond[n,"Label"] <- "Pond"
+      } else if(x == "Swab_Swab"){
+        dist.sd.single.pond[n,"Label"] <- "Swab"
+    }else if(x == "Pond_Swab"){
+        dist.sd.single.pond[n,"Label"] <- "Pond_Swab"
+    } 
+      n <- n + 1
+    } 
+  
+set.seed(1234)
+   boxplot_dist <- ggplot(dist.sd.single.pond, aes(x = Label, y = value, color = Label)) +
+    #theme_bw() +
+  geom_boxplot() +
+  geom_jitter(shape=1) +
+  #facet_wrap(~ Pond.x, scales = "free_x") +
+  scale_color_manual(values = cbPalette.sampleTypeComp) +
+  labs(y = "Atichinsons distance", x = "Sample type beta diversity comparison") +
+  theme(legend.position = "none")
+   
+  boxplot_dist
+```
+
+Athcinsons distance is equivilant to the distance between beta diversity estimates, two samples with the exact same microbiome have a distancce of 0, meanwhile two completely divergent samples have a distance of 100.
+We see that within each pond site pond samples are largely very similar to each other and there is minimal variance around this. In contrast Pond_swab shows that within each pond site, pond water and fish skin support a unique microbiome due to the high atchinson distance, indicating dissimilarity of beta diversity. There is quite a lot of variance in this group, demonstrating that in some pond sites there is not a great deal of difference between fish and water communities.
+Finally, from swab we see that within each pond site the microbiome does differ to a extent, with each fish supporting slightly different communities, again their is quite a bit of variance here.
+
+## Venn diagram
+There is a large cross over in detected taxa between pond water and tilapia skin niches. A simplistic visualisation of this is a venn diagram.
+We will take ntaxa of 16S sampled subsetted to each sample type, using the non-rarefied object.
+```{r venn, include=TRUE, echo=FALSE}
+s16_ps_pond <- subset_samples(s16_ps, sample_type %in% "Pond") %>% tidyPS(., FALSE) 
+s16_ps_pond #5168 taxa
+
+s16_ps_swab <- subset_samples(s16_ps, sample_type %in% "Swab") %>% tidyPS(., FALSE) 
+s16_ps_swab #4634
+
+pond_asvs <- s16_ps_pond %>% otu_table() %>%  colnames()
+swab_asvs <- s16_ps_swab %>% otu_table() %>%  colnames()
+
+venn_list2 <- list(Pond = pond_asvs, Swab = swab_asvs)
+
+venn_plot <- venn.diagram(venn_list2, filename = NULL,
+                          #circles
+                          lwd = 2, lty = 'blank', fill = c("#0072B2", "#CC79A7"),
+                          #numbers
+                          cex = .9, fontface = "italic", fontfamily = "sans",
+                          #set names
+                          cat.cex = 1,
+                          cat.fontface = "bold",
+                          cat.default.pos = "outer",
+                          cat.fontfamily = "sans")
+grid.draw(venn_plot)
+```
+
+## Combine figures
+```{r finale, include=TRUE, echo=FALSE}
+pt1 <- cowplot::plot_grid(rich_plot, shannon_plot, ncol = 2, rel_widths = c(1,1.5))
+pt2 <- cowplot::plot_grid(p2_rich, p1_shan, nrow = 2)
+pt3 <- cowplot::plot_grid(pt1,pt2, ncol = 2, rel_widths = c(3,1))
+pt4 <- cowplot::plot_grid(boxplot_dist, grobTree(venn_plot), ncol = 2, rel_widths = c(1,0.75), rel_heights = c(4, 1))
+final_plot <- cowplot::plot_grid(pt3, pt4, nrow = 2, rel_heights = c(1,1))
+ggsave(here("results", "figures", "pondVSswab_figure.svg"), plot = final_plot, width = 10, height = 8, dpi = 600)
+```
