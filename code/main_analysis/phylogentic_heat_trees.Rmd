@@ -1,0 +1,221 @@
+---
+title: "Heat tree community visualisation"
+author: "Jamie McMurtrie"
+date: "13/01/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, error = TRUE)
+knitr::opts_knit$set(root.dir = "C:/Users/jm1106/malawi_tilapia")
+```
+
+## Phylogentic heattrees with metacoder
+
+It is challenging to present the whole microbial community in a figure, stacked bar charts are often used as a presentation technique to compare community composition between samples. However it is challenging to interpret the overall contribution and these can only show a single taxonomic level at a time e.g. phylum or genus. Metacoder provides a unique visualisation of phylogenetic heattrees which present the phylogenetic relationship of taxa at each taxonomic level in the same figure, and showing their relative abundances at each of these levels for a sample set by variable colour and node widths.
+This is not a great option for comparing compositions between samples, but does provide a useful overview of 'what's there'.
+
+## R Setup Libraries
+
+```{r libraries, include=TRUE, echo=TRUE}
+library(metacoder); packageVersion("metacoder")
+library(phyloseq); packageVersion("phyloseq")
+library(ggplot2); packageVersion("ggplot2")
+library(dplyr); packageVersion("dplyr")
+library(here); packageVersion("here")
+```
+
+
+## Setup phyloseq objects
+
+```{r load data, include=TRUE}
+s16_ps <- readRDS(here("data/process/V4_phyloseq_obj_with_tree_prev_filt.rds")) #read in the 16s V4 phyloseq object
+s18_ps <- readRDS(here("data/process/V9_phyloseq_obj_with_tree_prev_filt.rds")) #and the 18s V9
+
+#our regular handy tidy up function for phyloseq objects
+tidyPS <- function(ps, RA){
+  ps <- prune_taxa(taxa_sums(ps) > 0, ps)
+  ps <- prune_samples(sample_sums(ps) > 0, ps)
+  if(RA == TRUE){
+    ps <- transform_sample_counts(ps, function(x){x / sum(x)})
+  }
+  return(ps)} #small function to tidy ps object after subsetting to remove any zero taxa or samples, optionally transforms counts to relative abundance
+
+rm_contams <- function(physeq, badTaxa){
+  allTaxa <- taxa_names(physeq)
+  allTaxa <- allTaxa[!(allTaxa %in% badTaxa)]
+  return(prune_taxa(allTaxa, physeq))
+} #handy self made function to remove selected taxa from a phylyoseq object.
+
+s16_ps_pond <- subset_samples(s16_ps, sample_type %in% c("Pond", "Swab")) %>% tidyPS(., FALSE) #subset to get rid of controls, note although we will plot ponds and swabs seperately, we want the complete taxa set for all so that the tree base structure is plotted identically, with zero presence simply having blank colour on the tree.
+s18_ps_pond <- subset_samples(s18_ps, sample_type %in% c("Pond", "Swab")) %>% tidyPS(., FALSE)
+s16_ps_pond #1456 taxa by 67 samples
+s18_ps_pond #706 taxa by 62 samples
+
+#remove two bivalve asvs from swabs samples as this if a false detection, and asv11 in particular gives a false representation in one swab, this method ensure they aren't removed from the pond samples
+swab_names <- subset_samples(s18_ps, sample_type == "Swab") %>% tidyPS(FALSE) %>% otu_table() %>% rownames()
+s18_ps_pond@otu_table@.Data[swab_names, "ASV11"] <- 0
+s18_ps_pond@otu_table@.Data[swab_names, "ASV764"] <- 0
+s18_ps_pond@otu_table@.Data[swab_names, "ASV11"]
+#s18_ps_pond <- rm_contams(s18_ps_pond, c("ASV1", "ASV2"))
+class(s18_ps_pond@otu_table@.Data) <- "numeric" #for some reason the otu format gets messed up and no longer things it is numeric. "Non-numeric matrix provided as OTU table."
+```
+
+## Produce 'taxa' object and calculate relative abundance
+Next, parsing our phyloseq object to a taxa object which metacoder uses for heattree generation. And also producing additional transformations which will be key for our plot, such as calculating relative abundance of each asv and respective nodes.
+```{r taxa object and transform, include = FALSE, echo=FALSE}
+#set include to false for this chunk as metacoder likes to throw up lots of warning messages which bloat the screen
+JM_heat_tree <- function(ps){
+  obj1 <- parse_phyloseq(ps) #parse phyloseq to taxa object
+  obj1$data$otu_props <- calc_obs_props(obj1, "otu_table", cols = obj1$data$sample_data$sample_id, groups = obj1$data$sample_data$sample_type) #calculate realtive abundance i.e. proportions, of otus grouped by sample type. Therefore one figure per OTU for pond and swab, not each sample.
+  obj1$data$tax_abund <- calc_taxon_abund(obj1, "otu_props") #calculate abundance for each taxon/node, not just each asv
+  #next two commands are used for removing selected labels
+  obj1$data$sam_tax_abund <- calc_taxon_abund(obj1, "otu_table", cols = obj1$data$sample_data$sample_id)
+  obj1$data$tax_occ <- calc_n_samples(obj1, "sam_tax_abund", cols = obj1$data$sample_data$sample_id, groups = obj1$data$sample_data$sample_type) #additional calc, results in a count for the number of asv occurances in samples
+  
+  #error with Length of argument'node_size' must be a factor of the length of 'taxon_id', due to the filter_taxa I believe changing the taxon ids, have to set reassign obs to false but not in otu table https://github.com/grunwaldlab/metacoder/issues/240
+  filtered_obj <- taxa::filter_taxa(obj1, taxon_ranks == "Order", supertaxa = TRUE, 
+                                reassign_obs = c(tax_abund = FALSE, otu_props = FALSE, sam_tax_abund = FALSE, tax_occ = FALSE))
+  #previous two lines required if filter to order level, if want all asvs use below line
+  #filtered_obj <- taxa::filter_taxa(obj1, taxon_ranks == "Genus", supertaxa = TRUE, 
+    #                    reassign_obs = c(tax_abund = FALSE, otu_props = FALSE, sam_tax_abund = FALSE, tax_occ = FALSE))
+  return(filtered_obj)}
+
+s16_taxa_obj <- JM_heat_tree(s16_ps_pond)
+s18_taxa_obj <- JM_heat_tree(s18_ps_pond)
+```
+
+## Plot heat trees
+Now we can plot heattrees, the base of each tree is curated based on all ASVs from both pond and swab samples, with an identical layout by setting a consistent seed.
+Each ASV is presented as a tip of the tree (i.e. terminal node), each terminal node is connected via edges to additional nodes which represent progressively coarser taxonomic levels.
+Size and colour of edges and nodes represent the relative abundance of each taxon for all swab samples or all pond water samples.
+Additionally, we only show node labels for taxa of high occurence, in this case observed in at least 50% of samples. The remaining rare taxa are still represented in colour, however including their names makes the plot too messy.
+
+First up 16S prokaryotic community.
+Note arechea are included here.
+ 
+```{r 16s plot heattree, include =TRUE, echo=FALSE}
+#plot 16S swabs
+set.seed(1234) #seed must be set each time as this sets out random distribution of nodes, I think an underlying process may set a new seed somewhere as the layout will change unless seed is set every time before running heat_tree.   
+s16_swab_heattree <- heat_tree(s16_taxa_obj,
+                node_label = ifelse(s16_taxa_obj$data$tax_occ$Swab <=16,"",taxon_names), # present in 50%+ samples n=32 otherwise node label not printed
+                #node_label = taxon_names,
+                node_size = s16_taxa_obj$data$tax_abund[['Swab']],
+                node_color = s16_taxa_obj$data$tax_abund[['Swab']],
+                node_color_axis_label = "Realtive abundance",
+                node_size_range = c(0.005,0.04), # create a larger range to emphasize differences in node sizes
+                node_label_size_range = c(0.01,0.03), #default c(0.02,0.02)
+                edge_size_range = c(0.002, 0.01), # make the edges thinner to emphasize differences in node sizes
+                layout = "davidson-harel", initial_layout = "reingold-tilford")
+print("Phylogentic heattree of prokaryotic (16s) community, and abundance of taxa from swab samples")
+s16_swab_heattree
+ggsave(here("results/figures/16SV4_heattree_swab.svg"), plot = s16_swab_heattree, width = 9, height = 9, dpi = 600)
+
+#plot 16s ponds
+set.seed(1234)  
+s16_pond_heattree <- heat_tree(s16_taxa_obj,
+                node_label = ifelse(s16_taxa_obj$data$tax_occ$Pond <=18,"",taxon_names), # present in 50%+ samples n=35,
+                node_size = s16_taxa_obj$data$tax_abund[['Pond']],
+                node_color = s16_taxa_obj$data$tax_abund[['Pond']],
+                node_color_axis_label = "Realtive abundance",
+                node_size_range = c(0.005,0.04), # create a larger range to emphasize differences in node sizes
+                node_label_size_range = c(0.01,0.03), #default c(0.02,0.02)
+                edge_size_range = c(0.002, 0.01), # make the edges thinner to emphasize differences in node sizes
+                layout = "davidson-harel", initial_layout = "reingold-tilford")
+print("Phylogentic heattree of prokaryotic (16s) community, and abundance of taxa from pond samples")
+s16_pond_heattree
+ggsave(here("results/figures/16SV4_heattree_pond.svg"), plot = s16_pond_heattree, width = 9, height = 9, dpi = 600)
+
+```
+
+Now we move to the 18S eukaryotic community.
+```{r 18s plot heattress, include =TRUE, echo=FALSE}
+#setup color palet to use for 18s, based on magama from the virdis package with additional grey, continue to use virdis for 16s
+col_back <- c("#150e37","#3b0f70","#651a80","#8c2981", "#b6377a", "#de4968", "#f76f5c", "#fe9f6d", "#fece91", "grey")
+col_for <- rev(col_back) #get in the right order so grey becomes smallest abundance
+
+set.seed(1234)  
+s18_swab_heattree <- heat_tree(s18_taxa_obj,
+                node_label = ifelse(s18_taxa_obj$data$tax_occ$Swab <=3,"",taxon_names), # present in 10%+ samples n=27, we use a lower occurence stat here (10%) than prokaryotes (50%) due to the great contribution of rare taxa in the community
+                #node_label = taxon_names,
+                node_size = s18_taxa_obj$data$tax_abund[['Swab']],
+                node_color = s18_taxa_obj$data$tax_abund[['Swab']],
+                node_color_axis_label = "Realtive abundance",
+                node_color_range = col_for, #add this color scheme for 18s
+                node_size_range = c(0.005,0.04), # create a larger range to emphasize differences in node sizes
+                node_label_size_range = c(0.02,0.04), #default c(0.02,0.02)
+                edge_size_range = c(0.002, 0.01), # make the edges thinner to emphasize differences in node sizes
+                layout = "davidson-harel", initial_layout = "reingold-tilford")
+print("Phylogentic heattree of eukaroytic (18s) community, and abundance of taxa from swab samples")
+s18_swab_heattree
+#ggsave(here("results/figures/18SV9_heattree_swab.svg"), plot = s18_swab_heattree, width = 9, height = 9, dpi = 600)
+
+set.seed(1234)  
+s18_pond_heattree <- heat_tree(s18_taxa_obj,
+                node_label = ifelse(s18_taxa_obj$data$tax_occ$Pond <=17,"",taxon_names), # present in 50%+ samples n=35,
+                node_size = s18_taxa_obj$data$tax_abund[['Pond']],
+                node_color = s18_taxa_obj$data$tax_abund[['Pond']],
+                node_color_axis_label = "Realtive abundance",
+                node_color_range = col_for, #add this color scheme for 18s
+                node_size_range = c(0.005,0.04), # create a larger range to emphasize differences in node sizes
+                node_label_size_range = c(0.02,0.04), #default c(0.02,0.02)
+                edge_size_range = c(0.002, 0.01), # make the edges thinner to emphasize differences in node sizes
+                layout = "davidson-harel", initial_layout = "reingold-tilford")
+print("Phylogentic heattree of eukaroytic (18s) community, and abundance of taxa from pond samples")
+s18_pond_heattree
+#ggsave(here("results/figures/18SV9_heattree_pond.svg"), plot = s18_pond_heattree, width = 9, height = 9, dpi = 600)
+```
+
+
+One issue raised in the eukaryotic community is the dominance of metazoan reads by two specific asvs in a single swab sample, which has a large influence on the overall tree abundance stats. Here we try removing the two culprit ASVs (putative moth and flatworm??), (which are not present in any other samples) and observe a changed heattree.
+```{r 18s tree repeat woth removed metazoans, include=FALSE, echo=FALSE, warning=FALSE}
+view_otu <- function(ps){View(ps@otu_table@.Data)}
+view_tax <- function(ps){View(ps@tax_table@.Data)}
+s18_metazoan <- subset_taxa(s18_ps_pond, Division=="Metazoa")
+view_tax(s18_metazoan)
+view_otu(s18_metazoan)
+
+subset_samples(s18_ps_pond, sample_names(s18_ps_pond) == "T15s") %>% tidyPS(., TRUE) %>%
+  plot_bar(fill = "Division")
+#sample T15s is the culprit with counts of 577 and 160 for ASV2370 and ASV2371
+
+ps_no_2370_1 <- rm_contams(s18_ps_pond, c("ASV2370", "ASV2371"))
+s18_met_trim_obj <- JM_heat_tree(ps_no_2370_1) 
+
+#above code is replicated, should have turned this into a function to avoid redundancy.
+set.seed(1234)  
+s18_met_trim_swab_heattree <- heat_tree(s18_met_trim_obj,
+                node_label = ifelse(s18_met_trim_obj$data$tax_occ$Swab <=3,"",taxon_names), # present in 10%+ samples n=27, we use a lower occurence stat here (10%) than prokaryotes (50%) due to the great contribution of rare taxa in the community
+                #node_label = taxon_names,
+                node_size = s18_met_trim_obj$data$tax_abund[['Swab']],
+                node_color = s18_met_trim_obj$data$tax_abund[['Swab']],
+                node_color_axis_label = "Realtive abundance",
+                node_color_range = col_for, #add this color scheme for 18s
+                node_size_range = c(0.005,0.04), # create a larger range to emphasize differences in node sizes
+                node_label_size_range = c(0.02,0.04), #default c(0.02,0.02)
+                edge_size_range = c(0.002, 0.01), # make the edges thinner to emphasize differences in node sizes
+                layout = "davidson-harel", initial_layout = "reingold-tilford")
+print("Removed suspect metazoan asvs. Phylogentic heattree of eukaroytic (18s) community, and abundance of taxa from swab samples")
+s18_met_trim_swab_heattree
+ggsave("results/pictures/18SV9_heattree_swab.svg", plot = s18_met_trim_swab_heattree, width = 9, height = 9, dpi = 600)
+
+set.seed(1234)  
+s18_met_trim_pond_heattree <- heat_tree(s18_met_trim_obj,
+                node_label = ifelse(s18_met_trim_obj$data$tax_occ$Pond <=17,"",taxon_names), # present in 50%+ samples n=35,
+                node_size = s18_met_trim_obj$data$tax_abund[['Pond']],
+                node_color = s18_met_trim_obj$data$tax_abund[['Pond']],
+                node_color_axis_label = "Realtive abundance",
+                node_color_range = col_for, #add this color scheme for 18s
+                node_size_range = c(0.005,0.04), # create a larger range to emphasize differences in node sizes
+                node_label_size_range = c(0.02,0.04), #default c(0.02,0.02)
+                edge_size_range = c(0.002, 0.01), # make the edges thinner to emphasize differences in node sizes
+                layout = "davidson-harel", initial_layout = "reingold-tilford")
+print("Removed suspect metazoan asvs. Phylogentic heattree of eukaroytic (18s) community, and abundance of taxa from pond samples")
+s18_met_trim_pond_heattree
+ggsave("results/pictures/18SV9_heattree_pond.svg", plot = s18_met_trim_pond_heattree, width = 9, height = 9, dpi = 600)
+```
+
+This does change the heat tree a fair amount, evening up the distribution of metazoa and ciliophora, and increasing contribution of three other major lineages. 
+Not sure which route to follow, without asv 2370 and 2371 seems more representative of all samples, perhaps sample T15s has a parasitic infection explaining the exceptionally high counts of arthropods and worms.
+Potentially methodologically concerning if this method of community representation can be so swayed by a single outlier. A clear demonstration that we need to come up with a way to reduce host 18s reads so the sequencing depth is focused on the microeukaryotes!
+I'm settling on the second approach with the removal of the suspect asvs as it clearly misrepresents the overall community structure for the majority of samples. 
