@@ -1,0 +1,189 @@
+---
+title: 'Malawi tilapia pond microbiomes: Taxonomy dotplots'
+author: "Jamie McMurtrie"
+date: "21/6/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, error = TRUE)
+knitr::opts_knit$set(root.dir = "C:/Users/jm1106/malawi_tilapia")
+```
+
+```{r libraries, include=FALSE}
+library(tidyverse); packageVersion("tidyverse")
+library(phyloseq); packageVersion("phyloseq")
+library(gridExtra); packageVersion("gridExtra") # for layout of separate plots
+library(here); packageVersion("here") # for handling relative file paths
+library(RColorBrewer); packageVersion("RColorBrewer")
+library(ggpubr); packageVersion("ggpubr") # additional options for plots
+library(corncob); packageVersion("corncob")
+```
+
+```{r seed and plot settings, include=FALSE}
+theme_set(theme_bw())
+set.seed(1234)
+
+#refreshed colour palette to reflect geographical similarities in geographical location of pond sites
+cbPalette.ponds.geog <- c("1" = "#e6ab02", "2" = "#66a61e", "3" = "#1b9e77","4" = "#a6761d", "5" = "#d95f02", "6" = "#7570b3", "7" = "#e7298a")
+theme_set(theme(panel.background = element_blank(), axis.line = element_line(colour = "black")))
+#when plotting with ggplot, removes grid lines etc for a clean plot N>B double check if needed
+
+# Shapes for the basic sample types
+shapes.sample.types <- c("Swab" = 16, "Water" = 15)
+```
+
+
+```{r phyloseq tidy up functions, include=TRUE, echo=FALSE}
+tidyPS <- function(ps, RA){
+  ps <- prune_taxa(taxa_sums(ps) > 0, ps)
+  ps <- prune_samples(sample_sums(ps) > 0, ps)
+  if(RA == TRUE){
+    ps <- transform_sample_counts(ps, function(x){x / sum(x)})
+  }
+  return(ps)} 
+
+rm_contams <- function(physeq, badTaxa){
+  allTaxa <- taxa_names(physeq)
+  allTaxa <- allTaxa[!(allTaxa %in% badTaxa)]
+  return(prune_taxa(allTaxa, physeq))
+}
+```
+
+Reading in data and preparing phyloseq objects for analysis.
+Critical to pass the 18s object through tidyPS as there is a single swab with no reads
+```{r data setup, include=TRUE, echo=FALSE, message=FALSE}
+s16_ps <- readRDS(here("data", "process", "V4_phyloseq_obj_with_tree_prev_filt.rds")) %>%
+  tidyPS(., FALSE)
+#can't start variable names with numbers, hence s16 / s18 herein refers to 16s 18s
+s18_ps <- readRDS(here("data", "process", "V9_phyloseq_obj_with_tree_prev_filt.rds")) %>%
+  tidyPS(., FALSE) #note this 18S phyloseq object has had the top ASV attributed to tilapia removed
+
+print("16S, subset to Malawi pond water")
+s16_ps
+print("18S, subset to Malawi pond water")
+s18_ps
+
+sample_data(s16_ps)$Pond <- as.factor(sample_data(s16_ps)$Pond) #this changes time points from a continuous scale to categoric
+sample_data(s18_ps)$Pond <- as.factor(sample_data(s18_ps)$Pond)
+```
+
+## Taxonomy boxplots
+Seven tilapia aquaculture ponds from two geographically distinct areas were included in this study. Ponds 1 to 5 were located in Blantyre, while ponds 6 and 7 were in Maldeco. We have 5 replicate water samples from each pond (35 samples total), and a variable number of swab samples from each pond.
+N.b. there is a conflict between tidytree and phyloseq both call a phylo object. Suppress the millions of warming messages with 'message=FASLE'
+
+```{r agglomerate and transform data, include=TRUE, echo=FALSE, message=FALSE}
+# V4 by class, keeping NAs
+V4.class <- s16_ps %>% tax_glom("Class", NArm = FALSE)
+
+# Convert to relative abundance, (could use tidyPS(., TRUE) function from above)
+V4.class.ra <- transform_sample_counts(V4.class, function(otu) otu/sum(otu))
+
+# Keep only those groups with a mean relative abundance greater than 1%
+V4.main.classes <- filter_taxa(V4.class.ra, function(x) mean(x) > 0.01, TRUE)
+
+# Melt phyloseq object into a single tibble and replace abundance zeros with NA
+# Rename sample_type Pond to Water for clarity
+# Also remove T22s for now, as it's clearly an outlier and is skewing the Alphaproteo plot
+V4.classes.melted <- as_tibble(psmelt(V4.main.classes), rownames = "Rows") %>%
+          filter(Sample != "T22s") %>%
+          mutate(sample_type = recode(sample_type, "Pond" = "Water")) %>%
+          mutate(Abundance_adj = na_if(Abundance, '0')) # replace 0 with NA so they're not plotted
+
+
+# V9 by division, keeping NAs
+V9.div <- s18_ps %>% tax_glom("Division", NArm = FALSE)
+
+# Convert to relative abundance
+V9.div.ra <- transform_sample_counts(V9.div, function(otu) otu/sum(otu))
+
+# Keep only those groups with a mean relative abundance greater than 1%
+V9.main.div <- filter_taxa(V9.div.ra, function(x) mean(x) > 0.01, TRUE)
+
+# Melt phyloseq object into a single tibble and replace abundance zeros with NA
+V9.div.melted <- as_tibble(psmelt(V9.main.div), rownames = "Rows") %>%
+          mutate(sample_type = recode(sample_type, "Pond" = "Water")) %>%
+          mutate(Abundance_adj = na_if(Abundance, '0')) # replace 0 with NA so they're not plotted
+```
+
+
+```{r saving desired figures, include=TRUE, echo=FALSE}
+V4_fig <- ggplot(data = V4.classes.melted, aes(x = Pond, y = Abundance_adj, color = sample_type)) +
+  # geom_boxplot(outlier.shape  = NA) +
+  geom_point(size = 2.5, alpha = 0.7) +
+  # geom_jitter(aes(color = sample_type, shape = sample_type), height = 0, width = .2) +
+  # scale_y_log10() +
+  labs(x = "", y = "Relative abundance") +
+  facet_wrap( ~ Class, ncol = 3, scales = "free") +
+  # ggpubr::rremove("legend") +
+  # scale_y_log10() +
+  scale_colour_manual(values = c("Water" = "#0072B2", "Swab" = "#CC79A7")) +
+  # scale_shape_manual(values = shapes.sample.types) +
+  theme(strip.background = element_blank()) +
+  theme(legend.position="bottom") +
+  theme(legend.title = element_blank()) +
+  labs(title = "Prokaryote taxonomy (Class level)", x = "Pond number")
+
+V9_fig <- ggplot(data = V9.div.melted, aes(x = Pond, y = Abundance_adj, color = sample_type)) +
+  # geom_boxplot(outlier.shape  = NA) +
+  geom_point(size = 2, alpha = 0.7) +
+  # geom_jitter(aes(color = sample_type, shape = sample_type), height = 0, width = .2) +
+  # scale_y_log10() +
+  labs(x = "", y = "Relative abundance") +
+  facet_wrap( ~ Division, ncol = 3, scales = "free") +
+  # ggpubr::rremove("legend") +
+  # rotate_x_text(angle = 90) +
+  # coord_cartesian(ylim = c(0, 0.8)) +
+  # scale_y_log10() +
+  scale_colour_manual(values = c("Water" = "#0072B2", "Swab" = "#CC79A7")) +
+  # scale_shape_manual(values = shapes.sample.types) +
+  theme(strip.background = element_blank()) +
+  theme(legend.position="bottom") +
+  theme(legend.title = element_blank()) +
+  labs(title = "Eukaryote taxonomy (Division level)", x = "Pond number")
+
+V4_V9_fig <- cowplot::plot_grid(V4_fig, V9_fig, ncol = 2)
+print(V4_V9_fig)
+ggsave(here("results", "figures", "taxonomy_boxplots.svg"), plot = V4_V9_fig, width = 14, height = 7, dpi = 600)
+```
+
+### Which classes are enriched?
+Perform differential abundance analysis to statistically test which classes/divsions are enriched in either sample type.
+
+```{r diff enrich, include=TRUE, echo=FALSE}
+s16_corn <- differentialTest(formula = ~ sample_type + Pond,
+                         phi.formula = ~ 1, #set as 1 because we don't want to test for significant dispersion
+                         formula_null = ~ Pond, #testing for significant differential abundance between sample types, while controlling for pond site as a random effect
+                         phi.formula_null = ~ 1,
+                         test = "LRT", boot = FALSE,
+                         data = V4.class,
+                         fdr_cutoff = 0.05)
+
+summary(s16_corn)
+s16_corn$significant_taxa
+plot(s16_corn)
+#just to know this is all classes, but previously we had filtered to remove any with a realtive abundance below 0.01%
+
+s18_corn <- differentialTest(formula = ~ sample_type + Pond,
+                         phi.formula = ~ 1, #set as 1 because we don't want to test for significant dispersion
+                         formula_null = ~ Pond, #testing for significant differential abundance between sample types, while controlling for pond site as a random effect
+                         phi.formula_null = ~ 1,
+                         test = "LRT", boot = FALSE,
+                         data = V9.div,
+                         fdr_cutoff = 0.05)
+
+plot(s18_corn)
+```
+
+From the dot plot list of 16S classes.
+Swab enriched = Gammaproteobacteria, Clostridia.
+Pond enriched = Cyanobacteria, actinobacteria, bacteroidia, Verrucomicrobiae, Planctomycetes, Kapabacteria, Chloroflexia
+
+18S Divsions.
+Swab enriched = cliophora, streptophyta
+Pond enriched = chlorphyta, ochrophyta, cryptophyta and dinoflagellata
+
+## Notes
+
+ Note a swab from pond site 4 has very high relative abundance for a meatzoan read.
+ Cross over of pond taxa into swab samples. For instance, swab sample T18 has all reaming euk reads attributed to ASV11, with species classification as Aspatharia_pfeifferiana, a freshwater muscle. This genus is endemic in Lake Malawi, and we see very high read counts in all pond water samples of site 4. The geography and habitat make sense for this mollousc to be present in the ponds it does not seem suspicious. Obviously the skin of a tilapia does not harbour this mollousc, so how much cross over do we get of pond water taxa in swab samples. It is clearly not perfect. This may not be as big an issue in the prokaryotes as there is a lot more diversity to that community (due to greater sampling depth) 
