@@ -1,4 +1,5 @@
-# Malawi_Tilapia_Microbiomes
+![](data/malawi_fish.svg)
+
 ## Relationships between pond water and tilapia skin microbiomes in aquaculture ponds in Malawi
 Jamie McMurtrie, Shayma Alathari, Dominique L. Chaput, David Bass, Camerson Chambi, Joseph Nagoli, Jérôme Delamare-Deboutteville, Mohan Chadag, Joanne Cable, Ben Temperton, Charles R. Tyler
 
@@ -11,8 +12,11 @@ This work was funded by the BBSRC/Newton Fund project (BB/N00504X/1). JM was sup
 
 ### How to regenerate this repository
 Original sequencing reads are available from the European Nucleotide Archive under the accession number PRJEB46984.
+
 Additionally, final ASV tables and phyloseq objects used for analyses are avaliable under `data/process`
+
 R (v. 3.6.3) should be located in the user's PATH
+
 Main R packages (not exhaustive):
 * `knitr`
 * `rmarkdown`
