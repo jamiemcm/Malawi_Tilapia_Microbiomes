@@ -8,23 +8,22 @@ Intensification of fish farming practices is being driven by the demand for incr
 ### Funding
 This work was funded by the BBSRC/Newton Fund project (BB/N00504X/1). JM was supported by the BBSRC/South West Biosciences Doctoral Training Partnership (BB/M009122/1) with CASE partners WorldFish and Cefas. Sequencing was performed at the Exeter Sequencing Service, using equipment funded by the Wellcome Trust Institutional Strategic Support Fund (WT097835MF), Wellcome Trust Multi-User Equipment Award (WT101650MA) and BBSRC LOLA award (BB/K003240/1). This work was further supported by the CGIAR Research Program on Fish Agri-Food Systems (FISH) led by WorldFish. CC and JN salary was supported by WorldFish. 
 
-### Overview of repositry organisation
 
 ### How to regenerate this repository
-Original sequencing reads are available from the SRA under the assession numbers xxx for 16S and xxx for 18S.
-mothur (v1.42.3) should be located in the user's PATH
-R (v. 4.0.2) should be located in the user's PATH
+Original sequencing reads are available from the European Nucleotide Archive under the accession number PRJEB46984.
+Additionally, final ASV tables and phyloseq objects used for analyses are avaliable under `data/process`
+R (v. 3.6.3) should be located in the user's PATH
 Main R packages (not exhaustive):
-knitr
-rmarkdown
-tidyr
-dplyr
-DADA2
-phyloseq
-decontam
-ggplot2
-breakaway
-DivNet
-corncob
-ALDEx2
-microbiome
+* `knitr`
+* `rmarkdown`
+* `tidyverse`
+* `DADA2`
+* `phyloseq`
+* `decontam`
+* `ggplot2`
+* `corncob`
+* `microbiome`
+* `pheatmap`
+* `factoextra`
+* `metacoder`
+* `here`
