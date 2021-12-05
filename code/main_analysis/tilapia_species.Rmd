@@ -66,7 +66,7 @@ sample_data(s16_ps_swab)$Pond <- as.factor(sample_data(s16_ps_swab)$Pond) #this 
 ```{r all species alpha diversity}
 sample_data(s16_ps_swab)
 
-species <- c(rep.int("Coptodon rendalli",11), rep.int("Tilapia sparmanii", 3), "Coptodon rendalli", "Tilapia sparmanii", "Coptodon rendalli", "Tilapia sparmanii", rep.int("Coptodon rendalli",5), rep.int("Oreochromis shiranus",9))
+species <- c(rep.int("Coptodon rendalli",11), rep.int("Oreochromis shiranus", 3), "Coptodon rendalli", "Oreochromis shiranus", "Coptodon rendalli", "Oreochromis shiranus", rep.int("Coptodon rendalli",5), rep.int("Oreochromis shiranus",9))
 
 sample_data(s16_ps_swab)$Species <- species #add species labels to each sample
 
@@ -80,19 +80,26 @@ alpha_ests <- estimate_richness(s16_ps_swab, measures = c("Chao1", "Shannon")) %
               cbind(sample_data(s16_ps_swab)[,"Species"]) %>%
               cbind(sample_data(s16_ps_swab)[,"Pond"])
 
-chao1_wlech <- oneway.test(alpha_ests$Chao1 ~ alpha_ests$Species)
-chao1_wlch_p <- paste("Welch's ANOVA, p = ", round(chao1_wlech$p.value, digits = 3))
-  
+#alpha_ests$Chao1 ~ alpha_ests$Species
+
+car::leveneTest(Chao1 ~ Species, data = alpha_ests)
+hist(alpha_ests$Chao1)
+chao1_wilx <- wilcox.test(alpha_ests$Chao1 ~ alpha_ests$Species)
+chao1_wilx_p <- paste("Wilcoxon Rank Sum, p = ", round(chao1_wilx$p.value, digits = 3))
+
 chao1_p <- ggplot(data = alpha_ests, aes(x = Species, y = Chao1, color = Species)) +
               geom_point(shape=19, alpha=0.4, stroke = 1, size = 3, aes(color=Species), show.legend=F) +
               stat_summary(fun = mean, geom = "crossbar", width = 0.8,
                        aes(color=Species), show.legend = F) +
             scale_color_manual(values = species_colour) +
             theme(axis.text.x = element_text(angle = 45, vjust = 0.5))+ #, vjust = 0.5, hjust=1)) +
-            annotate("text", x = 2, y = 800, label = chao1_wlch_p)
+            annotate("text", x = 2, y = 800, label = chao1_wilx_p)
+chao1_p
 
-shan_wlech <- oneway.test(alpha_ests$Shannon ~ alpha_ests$Species)
-shan_wlch_p <- paste("Welch's ANOVA, p = ", round(shan_wlech$p.value, digits = 3))
+car::leveneTest(Shannon ~ Species, data = alpha_ests)
+hist(alpha_ests$Shannon)
+shan_wilx <- wilcox.test(alpha_ests$Shannon ~ alpha_ests$Species)
+shan_wilx_p <- paste("Wilcoxon Rank Sum, p = ", round(shan_wilx$p.value, digits = 3))
 
 shan_p <- ggplot(data = alpha_ests, aes(x = Species, y = Shannon, color = Species)) +
               geom_point(shape=19, alpha=0.4, stroke = 1, size = 3, aes(color=Species), show.legend=F) +
@@ -100,11 +107,10 @@ shan_p <- ggplot(data = alpha_ests, aes(x = Species, y = Shannon, color = Specie
                        aes(color=Species), show.legend = F) +
            scale_color_manual(values = species_colour) +
             theme(axis.text.x = element_text(angle = 45, vjust = 0.5)) +
-          annotate("text", x = 2, y = 6, label = shan_wlch_p)
-
-chao1_p
+          annotate("text", x = 2, y = 6, label = shan_wilx_p)
 shan_p
 ```
+
 
 ```{r all species clr beta diversity}
 samples_V4 <- as.data.frame(sample_data(s16_ps_swab))
@@ -153,5 +159,5 @@ COmbine figures
 alpha_plots <- cowplot::plot_grid(chao1_p, shan_p, ncol = 2)
 alpha_beta_plots <- cowplot::plot_grid(alpha_plots, pind_V4, nrow = 2)
 alpha_beta_plots
-ggsave(here("results", "figures", "species_2.svg"), plot = alpha_beta_plots, width = 8, height = 8, dpi = 600)
+ggsave(here("results/figures/species_plot_x2.svg"), plot = alpha_beta_plots, width = 8, height = 8, dpi = 600)
 ```
